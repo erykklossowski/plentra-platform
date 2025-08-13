@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles for the energy platform */
+@layer base {
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  
+  /* Custom scrollbar for better UX */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: #f1f5f9;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+  
+  /* Dark mode scrollbar */
+  .dark ::-webkit-scrollbar-track {
+    background: #1e293b;
+  }
+  
+  .dark ::-webkit-scrollbar-thumb {
+    background: #475569;
+  }
+  
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
+}
+
+@layer components {
+  /* Custom button styles */
+  .btn-primary {
+    @apply px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors;
+  }
+  
+  .btn-secondary {
+    @apply px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300 transition-colors;
+  }
+  
+  /* Card hover effects */
+  .card-hover {
+    @apply transition-all duration-200 hover:shadow-md hover:-translate-y-1;
+  }
+  
+  /* Data visualization enhancements */
+  .chart-container {
+    @apply relative overflow-hidden rounded-lg;
+  }
+  
+  /* Loading states */
+  .skeleton {
+    @apply animate-pulse bg-gray-200 rounded;
+  }
+  
+  .dark .skeleton {
+    @apply bg-gray-700;
+  }
+}
+
+@layer utilities {
+  /* Custom utilities for the energy platform */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+  
+  .text-gradient {
+    background: linear-gradient(135deg, #1e3a8a 0%, #0891b2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  /* Responsive text sizing */
+  .text-responsive {
+    @apply text-sm md:text-base lg:text-lg;
+  }
+  
+  /* Custom focus styles */
+  .focus-ring {
+    @apply focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2;
+  }
+  
+  .dark .focus-ring {
+    @apply focus:ring-offset-gray-900;
+  }
+}

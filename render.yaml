@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: plentra-platform
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run preview
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /
+    autoDeploy: true
+    plan: free
