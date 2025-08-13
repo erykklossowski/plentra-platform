@@ -83,6 +83,17 @@ A sophisticated, modern web application for energy price observability and predi
 4. **Open in browser**
    Navigate to `http://localhost:3000`
 
+## 🚀 Deployment
+
+### Quick Deploy to Render
+1. Push to GitHub: `git push origin main`
+2. Connect to [Render](https://render.com)
+3. Create new Web Service
+4. Build Command: `npm install && npm run build`
+5. Start Command: `npm run preview`
+
+**Detailed deployment guide**: See [DEPLOYMENT.md](./DEPLOYMENT.md)
+
 ## 🚀 Available Scripts
 
 - `npm run dev` - Start development server with hot reload
