@@ -1,9 +1,9 @@
 services:
   - type: web
     name: plentra-platform
-    env: node
+    env: static
     buildCommand: npm install && npm run build
-    startCommand: npm run preview
+    staticPublishPath: ./dist
     envVars:
       - key: NODE_ENV
         value: production
