@@ -90,7 +90,7 @@ A sophisticated, modern web application for energy price observability and predi
 2. Connect to [Render](https://render.com)
 3. Create new Web Service
 4. Build Command: `npm install && npm run build`
-5. Start Command: `npm run preview`
+5. Publish Directory: `dist`
 
 **Detailed deployment guide**: See [DEPLOYMENT.md](./DEPLOYMENT.md)
 

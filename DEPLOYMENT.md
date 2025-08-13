@@ -29,9 +29,9 @@
 
 3. **Configure the Service**
    - **Name**: `plentra-platform` (or your preferred name)
-   - **Environment**: `Node`
+   - **Environment**: `Static Site`
    - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm run preview`
+   - **Publish Directory**: `dist`
    - **Plan**: Free
 
 4. **Environment Variables** (Optional)
