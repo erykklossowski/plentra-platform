@@ -75,6 +75,8 @@ export interface ForwardPrice {
 
 export interface SummaryResponse {
   retrospective_text: string;
+  retrospective_generated_at?: string;
+  retrospective_stale?: boolean;
   average_system_margin_pct: number;
   system_margin_signal: string;
   forward_signals: ForwardSignal[];
