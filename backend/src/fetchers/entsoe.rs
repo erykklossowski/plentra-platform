@@ -7,6 +7,24 @@ use std::collections::HashMap;
 const ENTSOE_BASE_URL: &str = "https://web-api.tp.entsoe.eu/api";
 const POLAND_AREA: &str = "10YPL-AREA-----S";
 
+/// ENTSO-E area codes for European bidding zones
+pub const EU_ZONES: &[(&str, &str, &str)] = &[
+    ("PL", "Poland", "10YPL-AREA-----S"),
+    ("DE-LU", "Germany/Luxembourg", "10Y1001A1001A82H"),
+    ("FR", "France", "10YFR-RTE------C"),
+    ("ES", "Spain", "10YES-REE------0"),
+    ("NL", "Netherlands", "10YNL----------L"),
+    ("BE", "Belgium", "10YBE----------2"),
+    ("AT", "Austria", "10YAT-APG------L"),
+    ("CZ", "Czech Republic", "10YCZ-CEPS-----N"),
+    ("SK", "Slovakia", "10YSK-SEPS-----K"),
+    ("SE4", "Sweden (SE4)", "10Y1001A1001A47J"),
+    ("DK1", "Denmark (DK1)", "10YDK-1--------W"),
+    ("IT-N", "Italy (North)", "10Y1001A1001A73I"),
+    ("HU", "Hungary", "10YHU-MAVIR----U"),
+    ("RO", "Romania", "10YRO-TEL------P"),
+];
+
 /// Per-type generation data: PSR type code -> total MW
 #[derive(Debug, Clone, Default)]
 pub struct GenerationByType {
@@ -133,6 +151,47 @@ pub async fn fetch_hourly_load(
 
     let text = fetch_xml(client, &url, "A65-hourly").await?;
     parse_hourly_load_xml(&text)
+}
+
+/// Fetch day-ahead prices for a single zone (document A44)
+pub async fn fetch_day_ahead_prices(
+    client: &reqwest::Client,
+    token: &str,
+    area_code: &str,
+) -> Result<Vec<(u32, f64)>> {
+    let (start, end) = yesterday_range();
+
+    let url = format!(
+        "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A44&processType=A01\
+         &in_Domain={area_code}&out_Domain={area_code}\
+         &periodStart={start}&periodEnd={end}"
+    );
+
+    let text = fetch_xml(client, &url, &format!("A44-{area_code}")).await?;
+    parse_da_prices_xml(&text)
+}
+
+/// Fetch day-ahead prices for multiple EU zones concurrently
+pub async fn fetch_eu_day_ahead_prices(
+    client: &reqwest::Client,
+    token: &str,
+) -> Vec<(String, String, Result<Vec<(u32, f64)>>)> {
+    let futures: Vec<_> = EU_ZONES
+        .iter()
+        .map(|(code, name, area)| {
+            let client = client.clone();
+            let token = token.to_string();
+            let code = code.to_string();
+            let name = name.to_string();
+            let area = area.to_string();
+            async move {
+                let result = fetch_day_ahead_prices(&client, &token, &area).await;
+                (code, name, result)
+            }
+        })
+        .collect();
+
+    futures::future::join_all(futures).await
 }
 
 async fn fetch_xml(client: &reqwest::Client, url: &str, label: &str) -> Result<String> {
@@ -438,6 +497,68 @@ fn parse_hourly_load_xml(xml: &str) -> Result<Vec<(u32, f64)>> {
         .collect();
     hourly.sort_by_key(|(h, _)| *h);
     Ok(hourly)
+}
+
+fn parse_da_prices_xml(xml: &str) -> Result<Vec<(u32, f64)>> {
+    let mut reader = Reader::from_str(xml);
+    let mut prices: HashMap<u32, Vec<f64>> = HashMap::new();
+    let mut current_position: Option<u32> = None;
+    let mut in_position = false;
+    let mut in_price_amount = false;
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                match name.as_str() {
+                    "position" => in_position = true,
+                    "price.amount" => in_price_amount = true,
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(e)) => {
+                let text = e.unescape().unwrap_or_default().to_string();
+                if in_position {
+                    current_position = text.parse().ok();
+                    in_position = false;
+                } else if in_price_amount {
+                    if let (Some(pos), Ok(price)) = (current_position, text.parse::<f64>()) {
+                        let hour = pos.saturating_sub(1); // position 1 = hour 0
+                        if hour < 24 {
+                            prices.entry(hour).or_default().push(price);
+                        }
+                    }
+                    in_price_amount = false;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    let mut hourly: Vec<(u32, f64)> = prices
+        .into_iter()
+        .map(|(hour, vals)| {
+            let avg = vals.iter().sum::<f64>() / vals.len() as f64;
+            (hour, round2(avg))
+        })
+        .collect();
+    hourly.sort_by_key(|(h, _)| *h);
+
+    anyhow::ensure!(!hourly.is_empty(), "No DA price data found in XML");
+    Ok(hourly)
+}
+
+/// Get the average DA price from hourly data
+pub fn average_da_price(hourly: &[(u32, f64)]) -> f64 {
+    if hourly.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = hourly.iter().map(|(_, p)| p).sum();
+    round2(sum / hourly.len() as f64)
 }
 
 // ─── Calculation functions ───

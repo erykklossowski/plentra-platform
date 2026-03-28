@@ -1,6 +1,8 @@
 pub mod crossborder;
 pub mod curtailment;
+pub mod europe;
 pub mod fuels;
+pub mod generation;
 pub mod health;
 pub mod prices;
 pub mod residual;

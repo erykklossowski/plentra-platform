@@ -84,6 +84,83 @@ export interface HeatmapEntry {
   value: number;
 }
 
+// ─── Generation (Phase 3) ───
+
+export interface JKZEntry {
+  technology: string;
+  efficiency: number;
+  emission_factor: number;
+  fuel_cost_eur_mwh: number;
+  co2_cost_eur_mwh: number;
+  jkz_eur_mwh: number;
+  clean_spread_eur_mwh: number;
+  dispatch_status: string;
+}
+
+export interface GenerationResponse {
+  jkz_table: JKZEntry[];
+  dispatch_signal: string;
+  css_spot: number;
+  cds_spot_eta42: number;
+  css_history_30d: number[];
+  cds_history_30d: number[];
+  eur_usd_rate: number;
+  rdn_eur_mwh: number;
+  fetched_at: string;
+  stale?: boolean;
+}
+
+// ─── Cross-Border (Phase 4) ───
+
+export interface CrossBorderHourly {
+  hour: number;
+  pl: number;
+  de: number;
+  spread: number;
+}
+
+export interface CrossBorderResponse {
+  pl_da_eur_mwh: number;
+  de_da_eur_mwh: number;
+  spread_eur_mwh: number;
+  spread_direction: string;
+  hourly_profile: CrossBorderHourly[];
+  avg_spread_30d: number;
+  flow_direction: string;
+  interconnector_utilization_pct: number;
+  fetched_at: string;
+  stale?: boolean;
+}
+
+// ─── Europe (Phase 4) ───
+
+export interface EURankingEntry {
+  rank: number;
+  country_code: string;
+  country_name: string;
+  da_price_eur_mwh: number;
+  bar_pct: number;
+  is_focus: boolean;
+}
+
+export interface ExtremePriceEntry {
+  code: string;
+  price: number;
+}
+
+export interface EuropeResponse {
+  rankings: EURankingEntry[];
+  poland_rank: number;
+  poland_price: number;
+  eu_average: number;
+  cheapest: ExtremePriceEntry;
+  most_expensive: ExtremePriceEntry;
+  fetched_at: string;
+  stale?: boolean;
+}
+
+// ─── Stability (Phase 2) ───
+
 export interface ResidualResponse {
   current_residual_gw: number;
   must_run_floor_gw: number;

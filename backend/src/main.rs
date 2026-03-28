@@ -51,6 +51,8 @@ async fn main() {
         .route("/api/residual", get(routes::residual::handler))
         .route("/api/prices", get(routes::prices::handler))
         .route("/api/crossborder", get(routes::crossborder::handler))
+        .route("/api/generation", get(routes::generation::handler))
+        .route("/api/europe", get(routes::europe::handler))
         .route("/api/reserves", get(routes::reserves::handler))
         .route("/api/curtailment", get(routes::curtailment::handler))
         .layer(cors)

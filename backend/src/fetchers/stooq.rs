@@ -99,6 +99,11 @@ pub async fn fetch_ara(client: &reqwest::Client) -> Result<StooqResult> {
     fetch_commodity(client, "lu.f").await
 }
 
+pub async fn fetch_eurusd(client: &reqwest::Client) -> Result<f64> {
+    let res = fetch_commodity(client, "eurusd").await?;
+    Ok(res.current_price)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
