@@ -103,7 +103,7 @@ pub async fn generate_retrospective(
         .header("content-type", "application/json")
         .json(&json!({
             "model": "claude-sonnet-4-6",
-            "max_tokens": 300,
+            "max_tokens": 1024,
             "messages": [{
                 "role": "user",
                 "content": prompt
