@@ -11,11 +11,10 @@ import CurtailmentSummary from "@/components/stability/CurtailmentSummary";
 export const revalidate = 3600;
 
 export default async function StabilityPage() {
-  let residual;
+  const [residualResult] = await Promise.allSettled([getResidual()]);
+  const residual = residualResult.status === "fulfilled" ? residualResult.value : null;
 
-  try {
-    residual = await getResidual();
-  } catch {
+  if (!residual) {
     return (
       <div className="p-8">
         <div className="bg-surface-container p-6 rounded-xl text-center">
