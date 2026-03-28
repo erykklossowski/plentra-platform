@@ -1,6 +1,6 @@
 export default function TopNav() {
   return (
-    <header className="fixed top-0 w-full z-50 bg-background flex justify-between items-center px-6 h-16 font-headline text-sm tracking-tight">
+    <header className="fixed top-0 w-full z-50 bg-background flex justify-between items-center px-6 h-16 font-headline text-sm tracking-tight no-print">
       <div className="flex items-center gap-8">
         <span className="text-xl font-bold text-primary tracking-tight">
           Plentra Research

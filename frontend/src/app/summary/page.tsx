@@ -1,6 +1,7 @@
 import { getSummary, getFuels, getSpreads } from "@/lib/api";
 import LiveBadge from "@/components/ui/LiveBadge";
 import MetricCard from "@/components/ui/MetricCard";
+import PrintButton from "@/components/ui/PrintButton";
 import MarketSummaryModule from "@/components/summary/MarketSummaryModule";
 import KeyIndicatorsTable from "@/components/summary/KeyIndicatorsTable";
 import IndustrialSpreadMonitor from "@/components/summary/IndustrialSpreadMonitor";
@@ -56,11 +57,9 @@ export default async function SummaryPage() {
             Comprehensive analysis of European energy market dynamics
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 no-print">
           <LiveBadge />
-          <button className="bg-linear-to-br from-primary to-primary-container text-on-primary px-4 py-1.5 rounded-lg font-semibold hover:opacity-90 transition-opacity text-sm">
-            Export PDF
-          </button>
+          <PrintButton />
           <button className="bg-surface-container-high text-on-surface px-4 py-1.5 rounded-lg font-medium hover:opacity-90 transition-opacity text-sm">
             Share Report
           </button>

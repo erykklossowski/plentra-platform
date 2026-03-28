@@ -16,7 +16,7 @@ export default function SideNav() {
   const pathname = usePathname();
 
   return (
-    <aside className="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-surface-container-low flex flex-col py-4 z-40">
+    <aside className="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-surface-container-low flex flex-col py-4 z-40 no-print">
       <div className="px-6 mb-6">
         <p className="text-primary font-bold">Market Insights</p>
         <p className="text-slate-500 text-[10px]">Plentra Intelligence</p>

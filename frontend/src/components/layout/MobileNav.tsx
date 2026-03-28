@@ -18,7 +18,7 @@ export default function MobileNav() {
   const pathname = usePathname();
 
   return (
-    <div className="md:hidden">
+    <div className="md:hidden no-print">
       <button
         onClick={() => setOpen(!open)}
         className="fixed top-4 right-4 z-50 p-2 text-on-surface"
