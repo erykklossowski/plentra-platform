@@ -11,34 +11,42 @@ import type { EURankingEntry } from "@/types/api";
 
 const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-50m.json";
 
-// Map our bidding zone codes to ISO alpha-3 country codes used in TopoJSON
-const ZONE_TO_ISO: Record<string, string[]> = {
-  PL: ["POL"],
-  "DE-LU": ["DEU", "LUX"],
-  FR: ["FRA"],
-  ES: ["ESP"],
-  NL: ["NLD"],
-  BE: ["BEL"],
-  AT: ["AUT"],
-  CZ: ["CZE"],
-  SK: ["SVK"],
-  SE4: ["SWE"],
-  DK1: ["DNK"],
-  "IT-N": ["ITA"],
-  HU: ["HUN"],
-  RO: ["ROU"],
+// world-atlas uses ISO 3166-1 numeric codes as geo.id
+// Map our bidding zone codes to those numeric IDs
+const ZONE_TO_NUMERIC: Record<string, string[]> = {
+  PL: ["616"],
+  "DE-LU": ["276", "442"],
+  FR: ["250"],
+  ES: ["724"],
+  NL: ["528"],
+  BE: ["056"],
+  AT: ["040"],
+  CZ: ["203"],
+  SK: ["703"],
+  SE4: ["752"],
+  DK1: ["208"],
+  "IT-N": ["380"],
+  HU: ["348"],
+  RO: ["642"],
 };
 
-// Build reverse lookup: ISO -> zone data
-function buildIsoLookup(
+// European country numeric IDs to render (even without price data)
+const EUROPEAN_IDS = new Set([
+  "616", "276", "250", "724", "380", "826", "528", "056", "040",
+  "203", "703", "348", "642", "100", "191", "705", "688", "070",
+  "499", "008", "807", "300", "620", "756", "752", "578", "246",
+  "208", "233", "428", "440", "372", "442",
+]);
+
+function buildNumericLookup(
   rankings: EURankingEntry[]
 ): Map<string, EURankingEntry> {
   const map = new Map<string, EURankingEntry>();
   for (const entry of rankings) {
-    const isos = ZONE_TO_ISO[entry.country_code];
-    if (isos) {
-      for (const iso of isos) {
-        map.set(iso, entry);
+    const ids = ZONE_TO_NUMERIC[entry.country_code];
+    if (ids) {
+      for (const id of ids) {
+        map.set(id, entry);
       }
     }
   }
@@ -49,7 +57,6 @@ function priceToColor(price: number, min: number, max: number): string {
   const range = max - min || 1;
   const t = Math.max(0, Math.min(1, (price - min) / range));
 
-  // Gradient: emerald (#34d399) → primary (#76d6d5) → tertiary (#ffb692) → error (#ffb4ab)
   if (t < 0.33) {
     const s = t / 0.33;
     return lerpColor([0x34, 0xd3, 0x99], [0x76, 0xd6, 0xd5], s);
@@ -80,18 +87,10 @@ export default function EuropeMap({ data }: EuropeMapProps) {
     y: number;
   } | null>(null);
 
-  const isoLookup = useMemo(() => buildIsoLookup(data), [data]);
+  const numericLookup = useMemo(() => buildNumericLookup(data), [data]);
   const prices = data.map((d) => d.da_price_eur_mwh);
   const minPrice = Math.min(...prices);
   const maxPrice = Math.max(...prices);
-
-  // European countries to show (even without data)
-  const EUROPEAN_ISOS = new Set([
-    "POL", "DEU", "FRA", "ESP", "ITA", "GBR", "NLD", "BEL", "AUT",
-    "CZE", "SVK", "HUN", "ROU", "BGR", "HRV", "SVN", "SRB", "BIH",
-    "MNE", "ALB", "MKD", "GRC", "PRT", "CHE", "SWE", "NOR", "FIN",
-    "DNK", "EST", "LVA", "LTU", "IRL", "LUX",
-  ]);
 
   return (
     <div className="relative">
@@ -109,20 +108,16 @@ export default function EuropeMap({ data }: EuropeMapProps) {
           <Geographies geography={GEO_URL}>
             {({ geographies }) =>
               geographies
-                .filter((geo) => {
-                  const iso = geo.properties?.ISO_A3 ?? geo.id;
-                  return EUROPEAN_ISOS.has(iso);
-                })
+                .filter((geo) => EUROPEAN_IDS.has(geo.id))
                 .map((geo) => {
-                  const iso = geo.properties?.ISO_A3 ?? geo.id;
-                  const entry = isoLookup.get(iso);
+                  const entry = numericLookup.get(geo.id);
 
                   const fill = entry
                     ? priceToColor(entry.da_price_eur_mwh, minPrice, maxPrice)
                     : "#222a3d";
 
                   const stroke = entry?.is_focus ? "#76d6d5" : "#3e4949";
-                  const strokeWidth = entry?.is_focus ? 2 : 0.5;
+                  const strokeWidth = entry?.is_focus ? 2.5 : 0.5;
 
                   return (
                     <Geography

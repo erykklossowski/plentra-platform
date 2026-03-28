@@ -34,7 +34,7 @@ export default function EURankingBar({ data }: EURankingBarProps) {
               className={`h-6 rounded-sm transition-all duration-500 ${
                 entry.is_focus
                   ? "bg-primary shadow-[0_0_12px_rgba(118,214,213,0.3)]"
-                  : "bg-surface-container-highest"
+                  : "bg-secondary"
               }`}
               style={{ width: `${entry.bar_pct}%` }}
             />
