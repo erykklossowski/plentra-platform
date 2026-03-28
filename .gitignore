@@ -1,0 +1,31 @@
+# Rust
+/backend/target/
+**/*.rs.bk
+
+# Node
+/frontend/node_modules/
+/frontend/.next/
+/frontend/out/
+
+# Environment
+.env
+.env.local
+.env.production.local
+.env.development.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel
+
+# Claude
+.claude/
