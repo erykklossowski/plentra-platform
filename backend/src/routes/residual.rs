@@ -60,8 +60,9 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
             let solar_mw = gen.solar_mw();
             let renewable_mw = gen.total_renewable_mw();
 
+            let current_month = Utc::now().month();
             let residual_gw = entsoe::calculate_residual_demand_gw(load_mw, wind_mw, solar_mw);
-            let must_run_gw = entsoe::calculate_must_run_floor_gw(&gen);
+            let must_run_gw = entsoe::calculate_must_run_floor_gw(&gen, current_month);
             let stability_margin = entsoe::round2(residual_gw - must_run_gw);
 
             let residual_mw = load_mw - wind_mw - solar_mw;
@@ -77,6 +78,7 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 &hourly_load_res.unwrap_or_default(),
                 residual_gw,
                 must_run_gw,
+                current_month,
             );
 
             // Build heatmap from hourly profile
@@ -159,6 +161,7 @@ fn build_hourly_profile(
     hourly_load: &[(u32, f64)],
     fallback_residual: f64,
     fallback_must_run: f64,
+    month: u32,
 ) -> Vec<HourlyProfileEntry> {
     let load_map: std::collections::HashMap<u32, f64> =
         hourly_load.iter().map(|(h, v)| (*h, *v)).collect();
@@ -190,7 +193,7 @@ fn build_hourly_profile(
                 let wind = g.wind_mw();
                 let solar = g.solar_mw();
                 let residual = entsoe::calculate_residual_demand_gw(load_mw, wind, solar);
-                let must_run = entsoe::calculate_must_run_floor_gw(g);
+                let must_run = entsoe::calculate_must_run_floor_gw(g, month);
                 HourlyProfileEntry {
                     hour: h,
                     residual_gw: residual,

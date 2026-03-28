@@ -52,6 +52,16 @@ impl GenerationByType {
         self.get("B14")
     }
 
+    /// Hard coal (B05) — includes all coal-fired units except lignite
+    pub fn hard_coal_mw(&self) -> f64 {
+        self.get("B05")
+    }
+
+    /// Gas turbines and CCGTs (B04)
+    pub fn gas_mw(&self) -> f64 {
+        self.get("B04")
+    }
+
     pub fn total_renewable_mw(&self) -> f64 {
         self.wind_mw() + self.solar_mw()
     }
@@ -567,10 +577,24 @@ pub fn calculate_residual_demand_gw(load_mw: f64, wind_mw: f64, solar_mw: f64) -
     round2((load_mw - wind_mw - solar_mw) / 1000.0)
 }
 
-pub fn calculate_must_run_floor_gw(gen: &GenerationByType) -> f64 {
-    let nuclear = gen.nuclear_mw();
-    let lignite_min = gen.lignite_mw() * 0.6; // technical minimum
-    round2((nuclear + lignite_min) / 1000.0)
+/// Calculate the must-run floor in GW for the Polish KSE.
+///
+/// * Lignite (Bełchatów, Turów): Pmin ≈ 50 % of dispatch
+/// * Hard coal (weighted fleet average ~42 %): 200 MW class ~55 %, 500 MW class ~40 %,
+///   Jaworzno III ~25–30 %
+/// * Gas / CHP: during heating season (Oct–Apr) CHP blocks are must-run at ~45 %;
+///   outside the heating season the minimum drops to ~20 % (balancing minimum only).
+///   There is no nuclear in KSE.
+pub fn calculate_must_run_floor_gw(gen: &GenerationByType, month: u32) -> f64 {
+    let lignite_must_run = gen.lignite_mw() * 0.50;
+    let hard_coal_must_run = gen.hard_coal_mw() * 0.42;
+    let gas_pmin = match month {
+        10..=12 | 1..=4 => 0.45, // CHP must-run w sezonie grzewczym
+        5..=9 => 0.20,            // minimum bilansowe poza sezonem
+        _ => 0.30,
+    };
+    let gas_must_run = gen.gas_mw() * gas_pmin;
+    round2((lignite_must_run + hard_coal_must_run + gas_must_run) / 1000.0)
 }
 
 pub fn calculate_cri(load_mw: f64, residual_mw: f64, must_run_mw: f64, renewable_mw: f64) -> (f64, String) {
@@ -657,11 +681,23 @@ mod tests {
     #[test]
     fn test_must_run_floor() {
         let mut gen = GenerationByType::default();
-        gen.data.insert("B14".to_string(), 0.0); // no nuclear in Poland
-        gen.data.insert("B02".to_string(), 8000.0); // lignite at 8GW
-        let floor = calculate_must_run_floor_gw(&gen);
-        // 0 + 8000 * 0.6 = 4800MW = 4.8GW
-        assert!((floor - 4.8).abs() < 0.01);
+        gen.data.insert("B02".to_string(), 8000.0); // lignite 8 GW
+        gen.data.insert("B05".to_string(), 6000.0); // hard coal 6 GW
+        gen.data.insert("B04".to_string(), 2000.0); // gas 2 GW
+
+        // Heating season (January): gas_pmin = 0.45
+        // lignite: 8000 * 0.50 = 4000
+        // hard coal: 6000 * 0.42 = 2520
+        // gas: 2000 * 0.45 = 900
+        // total = 7420 MW = 7.42 GW
+        let floor_jan = calculate_must_run_floor_gw(&gen, 1);
+        assert!((floor_jan - 7.42).abs() < 0.01, "heating: {floor_jan}");
+
+        // Summer (July): gas_pmin = 0.20
+        // gas: 2000 * 0.20 = 400
+        // total = 4000 + 2520 + 400 = 6920 MW = 6.92 GW
+        let floor_jul = calculate_must_run_floor_gw(&gen, 7);
+        assert!((floor_jul - 6.92).abs() < 0.01, "summer: {floor_jul}");
     }
 
     #[test]
