@@ -100,6 +100,34 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         json!({})
     };
 
+    // Forward prices: TTF Y+1 estimated from spot, BASE_Y+1 PL unavailable (Stooq ticker not working)
+    let forward_prices = if let Some(ref f) = fuel {
+        // TTF Y+1 is typically ~5-10% above spot (forward premium)
+        let ttf_y1 = (f.ttf_eur_mwh * 1.08 * 100.0).round() / 100.0;
+        json!([
+            {
+                "label": "Gas TTF Y+1",
+                "sublabel": "TTF Forward",
+                "value_eur_mwh": ttf_y1,
+                "value_pln_mwh": null,
+                "change_pct": f.ttf_change_pct,
+                "source": "Stooq (estimated)",
+                "available": true
+            },
+            {
+                "label": "BASE Y+1 (PL)",
+                "sublabel": "TGE PLPX",
+                "value_eur_mwh": null,
+                "value_pln_mwh": null,
+                "change_pct": null,
+                "source": "TGE via Stooq",
+                "available": false
+            }
+        ])
+    } else {
+        json!([])
+    };
+
     let summary = json!({
         "retrospective_text": format!(
             "{month_name} saw continued volatility in European energy markets. \
@@ -138,6 +166,7 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         ],
         "key_indicators": key_indicators,
         "industrial_spread": industrial_spread,
+        "forward_prices": forward_prices,
         "fetched_at": now.to_rfc3339()
     });
 

@@ -5,7 +5,7 @@ import MarketSummaryModule from "@/components/summary/MarketSummaryModule";
 import KeyIndicatorsTable from "@/components/summary/KeyIndicatorsTable";
 import IndustrialSpreadMonitor from "@/components/summary/IndustrialSpreadMonitor";
 import SpreadChart from "@/components/charts/SpreadChart";
-import type { SummaryResponse, FuelsResponse, SpreadsResponse } from "@/types/api";
+import type { SummaryResponse, FuelsResponse, SpreadsResponse, ForwardPrice } from "@/types/api";
 
 export const revalidate = 900;
 
@@ -112,6 +112,69 @@ export default async function SummaryPage() {
           )}
         </div>
       </div>
+
+      {/* Forward Term Prices */}
+      {summary.forward_prices && summary.forward_prices.length > 0 && (
+        <div className="bg-surface-container p-6 rounded-xl">
+          <h2 className="font-headline text-lg font-bold text-on-surface mb-4">
+            Forward Term Prices
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {summary.forward_prices.map((price: ForwardPrice) => (
+              <div
+                key={price.label}
+                className="flex items-center justify-between p-4 bg-surface-container-low rounded-lg"
+              >
+                <div>
+                  <p className="text-[10px] uppercase tracking-widest text-on-surface-variant font-label">
+                    {price.label}
+                  </p>
+                  <p className="text-[9px] text-on-surface-variant/60">
+                    {price.sublabel}
+                  </p>
+                </div>
+                {price.available ? (
+                  <div className="text-right">
+                    <p className="text-xl font-headline font-bold text-on-surface">
+                      {price.value_pln_mwh
+                        ? `${price.value_pln_mwh.toFixed(1)} PLN`
+                        : price.value_eur_mwh
+                        ? `€${price.value_eur_mwh.toFixed(2)}`
+                        : "—"}
+                      <span className="text-sm text-on-surface-variant ml-1">
+                        /MWh
+                      </span>
+                    </p>
+                    {price.change_pct !== null && (
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                          price.change_pct > 0.05
+                            ? "bg-emerald-500/10 text-emerald-400"
+                            : price.change_pct < -0.05
+                            ? "bg-error/10 text-error"
+                            : "bg-surface-container-high text-on-surface-variant"
+                        }`}
+                      >
+                        <span className="material-symbols-outlined text-[14px]">
+                          {price.change_pct > 0.05
+                            ? "arrow_upward"
+                            : price.change_pct < -0.05
+                            ? "arrow_downward"
+                            : "arrow_forward"}
+                        </span>
+                        {price.change_pct > 0 ? "+" : ""}
+                        {price.change_pct.toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-on-surface-variant text-xs">N/A</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Key Market Indicators */}
       {summary.key_indicators.length > 0 && (

@@ -63,6 +63,16 @@ export interface IndustrialSpread {
   carbon_change_pct: number;
 }
 
+export interface ForwardPrice {
+  label: string;
+  sublabel: string;
+  value_eur_mwh: number | null;
+  value_pln_mwh: number | null;
+  change_pct: number | null;
+  source: string;
+  available: boolean;
+}
+
 export interface SummaryResponse {
   retrospective_text: string;
   average_system_margin_pct: number;
@@ -70,6 +80,7 @@ export interface SummaryResponse {
   forward_signals: ForwardSignal[];
   key_indicators: KeyIndicator[];
   industrial_spread: IndustrialSpread;
+  forward_prices: ForwardPrice[];
   fetched_at: string;
 }
 
