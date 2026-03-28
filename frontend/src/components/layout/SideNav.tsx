@@ -8,6 +8,7 @@ const navItems = [
   { href: "/summary", icon: "dashboard", label: "Summary" },
   { href: "/generation", icon: "bolt", label: "Generation" },
   { href: "/stability", icon: "timeline", label: "Stability" },
+  { href: "/reserves", icon: "speed", label: "Reserves" },
   { href: "/crossborder", icon: "swap_horiz", label: "Cross-Border" },
   { href: "/europe", icon: "public", label: "Europe" },
 ];

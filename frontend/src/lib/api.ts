@@ -7,6 +7,7 @@ import type {
   CrossBorderResponse,
   EuropeResponse,
   CurtailmentResponse,
+  ReservesResponse,
 } from "@/types/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -30,3 +31,4 @@ export const getGeneration = () => apiFetch<GenerationResponse>("/api/generation
 export const getCrossBorder = () => apiFetch<CrossBorderResponse>("/api/crossborder");
 export const getEurope = () => apiFetch<EuropeResponse>("/api/europe");
 export const getCurtailment = () => apiFetch<CurtailmentResponse>("/api/curtailment");
+export const getReserves = () => apiFetch<ReservesResponse>("/api/reserves");

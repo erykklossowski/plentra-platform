@@ -209,6 +209,37 @@ export interface CurtailmentResponse {
   fetched_at: string;
 }
 
+// ──��� Reserves (Phase 5b) ───
+
+export interface ReservePrices {
+  afrr_d_pln_mw: number;
+  afrr_g_pln_mw: number;
+  mfrrd_d_pln_mw: number;
+  mfrrd_g_pln_mw: number;
+  fcr_d_pln_mw: number;
+  fcr_g_pln_mw: number;
+  rr_g_pln_mw: number;
+}
+
+export interface ReserveMonthlyHistory {
+  month: string;
+  afrr_d: number;
+  afrr_g: number;
+  mfrrd_d: number;
+  mfrrd_g: number;
+  fcr_d: number;
+  fcr_g: number;
+  rr_g: number;
+}
+
+export interface ReservesResponse {
+  date: string;
+  prices: ReservePrices;
+  history_13m: ReserveMonthlyHistory[];
+  source: string;
+  fetched_at: string;
+}
+
 // ─── Stability (Phase 2) ───
 
 export interface ResidualResponse {
