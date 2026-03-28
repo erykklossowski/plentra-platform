@@ -50,17 +50,22 @@ export default function ReserveVsSpreadChart({
   reserveDaily,
   spreadHistory,
 }: ReserveVsSpreadChartProps) {
-  // Build a lookup from reserve daily data
-  const reserveByDate = new Map(
-    reserveDaily.map((r) => [r.date, r.afrr_g])
-  );
-
-  // Join spread history with reserve daily prices by date
-  const combined = spreadHistory.map((s) => ({
-    date: s.date,
-    css: s.css,
-    afrr_g: reserveByDate.get(s.date) ?? null,
-  }));
+  // Join by index — both are 30-day series, most recent last
+  // Align from the end (both end at "today")
+  const rLen = reserveDaily.length;
+  const sLen = spreadHistory.length;
+  const len = Math.max(rLen, sLen);
+  const combined = Array.from({ length: len }, (_, i) => {
+    const sIdx = sLen - len + i;
+    const rIdx = rLen - len + i;
+    const spread = sIdx >= 0 ? spreadHistory[sIdx] : undefined;
+    const reserve = rIdx >= 0 ? reserveDaily[rIdx] : undefined;
+    return {
+      date: reserve?.date ?? spread?.date ?? `${i + 1}`,
+      css: spread?.css ?? null,
+      afrr_g: reserve?.afrr_g ?? null,
+    };
+  });
 
   return (
     <ResponsiveContainer width="100%" height={280}>
