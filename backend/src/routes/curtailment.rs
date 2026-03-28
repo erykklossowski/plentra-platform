@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 
 use crate::fetchers::pse::{
     aggregate_curtailment_daily, aggregate_to_hourly, estimate_ytd_gwh,
-    estimate_ytd_gwh_field, fetch_pse, today_warsaw, date_days_ago,
-    DailyCurtailment, PozRedozeRecord,
+    estimate_ytd_gwh_field, fetch_pse, fetch_pse_date_range, today_warsaw,
+    date_days_ago, DailyCurtailment, PozRedozeRecord,
 };
 use crate::AppState;
 
@@ -25,31 +25,27 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     let today = today_warsaw();
     let date_30d_ago = date_days_ago(30);
 
-    // Fetch today's curtailment (15-min granularity, 96 records)
+    // Fetch today's curtailment (single day — 96 records, fits in one request)
+    let today_filter = format!(
+        "business_date ge '{}' and business_date le '{}'",
+        today, today
+    );
     let today_records: Vec<PozRedozeRecord> = fetch_pse(
         &state.http_client,
         "poze-redoze",
-        &format!(
-            "business_date ge '{}' and business_date le '{}'",
-            today, today
-        ),
-        200,
+        &today_filter,
     )
     .await
     .unwrap_or_default();
 
-    // Fetch 30-day rolling window for YTD estimate
-    let rolling_records: Vec<PozRedozeRecord> = fetch_pse(
+    // Fetch 30-day rolling window day-by-day (PSE returns max 100 records per request)
+    let rolling_records: Vec<PozRedozeRecord> = fetch_pse_date_range(
         &state.http_client,
         "poze-redoze",
-        &format!(
-            "business_date ge '{}' and business_date le '{}'",
-            date_30d_ago, today
-        ),
-        3000,
+        &date_30d_ago,
+        &today,
     )
-    .await
-    .unwrap_or_default();
+    .await;
 
     // Aggregate today
     let today_agg = aggregate_curtailment_daily(&today_records, &today);

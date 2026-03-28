@@ -76,17 +76,16 @@ pub struct DailyCurtailment {
 
 // ─── Generic PSE fetch ───
 
+/// Fetch PSE data for a single filter expression (max ~100 records returned).
 pub async fn fetch_pse<T: DeserializeOwned>(
     client: &reqwest::Client,
     endpoint: &str,
     filter: &str,
-    top: usize,
 ) -> anyhow::Result<Vec<T>> {
     let url = format!(
-        "https://api.raporty.pse.pl/api/{}?$filter={}&$top={}",
+        "https://api.raporty.pse.pl/api/{}?$filter={}",
         endpoint,
         urlencoding::encode(filter),
-        top
     );
     let resp: serde_json::Value = client
         .get(&url)
@@ -100,6 +99,42 @@ pub async fn fetch_pse<T: DeserializeOwned>(
 
     let records = serde_json::from_value(resp["value"].clone())?;
     Ok(records)
+}
+
+/// Fetch PSE data for a date range, one day at a time (PSE returns max 100 records per request).
+pub async fn fetch_pse_date_range<T: DeserializeOwned + Send + 'static>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    start_date: &str,
+    end_date: &str,
+) -> Vec<T> {
+    let start = chrono::NaiveDate::parse_from_str(start_date, "%Y-%m-%d");
+    let end = chrono::NaiveDate::parse_from_str(end_date, "%Y-%m-%d");
+
+    let (start, end) = match (start, end) {
+        (Ok(s), Ok(e)) => (s, e),
+        _ => return vec![],
+    };
+
+    let mut all_records: Vec<T> = Vec::new();
+    let mut date = start;
+
+    while date <= end {
+        let date_str = date.to_string();
+        let filter = format!(
+            "business_date ge '{}' and business_date le '{}'",
+            date_str, date_str
+        );
+        match fetch_pse::<T>(client, endpoint, &filter).await {
+            Ok(records) => all_records.extend(records),
+            Err(e) => {
+                tracing::warn!("PSE fetch failed for {}/{}: {}", endpoint, date_str, e);
+            }
+        }
+        date += chrono::Duration::days(1);
+    }
+
+    all_records
 }
 
 // ─── Aggregation functions ───
