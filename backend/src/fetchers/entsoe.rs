@@ -39,18 +39,25 @@ impl GenerationByType {
     }
 }
 
+/// Get the most recent complete day range (yesterday 00:00 to today 00:00 UTC)
+/// ENTSO-E actual data has a publication delay, so we always query the previous day
+fn yesterday_range() -> (String, String) {
+    let now = Utc::now();
+    let today = now.format("%Y%m%d0000").to_string();
+    let yesterday = (now - Duration::days(1)).format("%Y%m%d0000").to_string();
+    (yesterday, today)
+}
+
 /// Fetch actual generation per type (document A75, process A16)
 pub async fn fetch_actual_generation(
     client: &reqwest::Client,
     token: &str,
 ) -> Result<GenerationByType> {
-    let now = Utc::now();
-    let start = (now - Duration::hours(2)).format("%Y%m%d%H00").to_string();
-    let end = now.format("%Y%m%d%H00").to_string();
+    let (start, end) = yesterday_range();
 
     let url = format!(
         "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A75&processType=A16\
-         &in_Domain={POLAND_AREA}&outBiddingZone_Domain={POLAND_AREA}\
+         &in_Domain={POLAND_AREA}\
          &periodStart={start}&periodEnd={end}"
     );
 
@@ -63,9 +70,7 @@ pub async fn fetch_actual_load(
     client: &reqwest::Client,
     token: &str,
 ) -> Result<f64> {
-    let now = Utc::now();
-    let start = (now - Duration::hours(2)).format("%Y%m%d%H00").to_string();
-    let end = now.format("%Y%m%d%H00").to_string();
+    let (start, end) = yesterday_range();
 
     let url = format!(
         "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A65&processType=A16\
@@ -96,18 +101,16 @@ pub async fn fetch_generation_forecast(
     parse_forecast_xml(&text)
 }
 
-/// Fetch 24-hour generation profile for hourly breakdown
+/// Fetch 24-hour generation profile for hourly breakdown (yesterday)
 pub async fn fetch_hourly_generation(
     client: &reqwest::Client,
     token: &str,
 ) -> Result<Vec<(u32, GenerationByType)>> {
-    let now = Utc::now();
-    let start = now.format("%Y%m%d0000").to_string();
-    let end = (now + Duration::hours(24)).format("%Y%m%d0000").to_string();
+    let (start, end) = yesterday_range();
 
     let url = format!(
         "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A75&processType=A16\
-         &in_Domain={POLAND_AREA}&outBiddingZone_Domain={POLAND_AREA}\
+         &in_Domain={POLAND_AREA}\
          &periodStart={start}&periodEnd={end}"
     );
 
@@ -115,14 +118,12 @@ pub async fn fetch_hourly_generation(
     parse_hourly_generation_xml(&text)
 }
 
-/// Fetch 24-hour load profile
+/// Fetch 24-hour load profile (yesterday)
 pub async fn fetch_hourly_load(
     client: &reqwest::Client,
     token: &str,
 ) -> Result<Vec<(u32, f64)>> {
-    let now = Utc::now();
-    let start = now.format("%Y%m%d0000").to_string();
-    let end = (now + Duration::hours(24)).format("%Y%m%d0000").to_string();
+    let (start, end) = yesterday_range();
 
     let url = format!(
         "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A65&processType=A16\
@@ -309,9 +310,10 @@ fn parse_forecast_xml(xml: &str) -> Result<(f64, f64)> {
 }
 
 fn parse_hourly_generation_xml(xml: &str) -> Result<Vec<(u32, GenerationByType)>> {
-    // Simplified: parse all points and group by position (hour)
+    // Parse all points and group by hour (PT15M: positions 1-4 = hour 0, 5-8 = hour 1, etc.)
     let mut reader = Reader::from_str(xml);
-    let mut hourly: HashMap<u32, GenerationByType> = HashMap::new();
+    // Accumulate: hour -> psr -> Vec<f64> (to average 15-min intervals)
+    let mut hourly_acc: HashMap<u32, HashMap<String, Vec<f64>>> = HashMap::new();
     let mut current_psr: Option<String> = None;
     let mut current_position: Option<u32> = None;
     let mut in_psr_type = false;
@@ -324,7 +326,7 @@ fn parse_hourly_generation_xml(xml: &str) -> Result<Vec<(u32, GenerationByType)>
             Ok(Event::Start(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 match name.as_str() {
-                    "psrType" | "MktPSRType" => in_psr_type = true,
+                    "psrType" => in_psr_type = true,
                     "position" => in_position = true,
                     "quantity" => in_quantity = true,
                     _ => {}
@@ -348,10 +350,15 @@ fn parse_hourly_generation_xml(xml: &str) -> Result<Vec<(u32, GenerationByType)>
                     if let (Some(psr), Some(pos), Ok(qty)) =
                         (&current_psr, current_position, text.parse::<f64>())
                     {
-                        let hour = pos.saturating_sub(1); // position is 1-based
+                        // PT15M resolution: position 1-4 = hour 0, 5-8 = hour 1, etc.
+                        let hour = (pos.saturating_sub(1)) / 4;
                         if hour < 24 {
-                            let entry = hourly.entry(hour).or_default();
-                            entry.data.insert(psr.clone(), qty);
+                            hourly_acc
+                                .entry(hour)
+                                .or_default()
+                                .entry(psr.clone())
+                                .or_default()
+                                .push(qty);
                         }
                     }
                     in_quantity = false;
@@ -364,14 +371,26 @@ fn parse_hourly_generation_xml(xml: &str) -> Result<Vec<(u32, GenerationByType)>
         buf.clear();
     }
 
-    let mut result: Vec<(u32, GenerationByType)> = hourly.into_iter().collect();
+    // Average the 15-min values into hourly
+    let mut result: Vec<(u32, GenerationByType)> = hourly_acc
+        .into_iter()
+        .map(|(hour, psr_map)| {
+            let mut gen = GenerationByType::default();
+            for (psr, values) in psr_map {
+                let avg = values.iter().sum::<f64>() / values.len() as f64;
+                gen.data.insert(psr, avg);
+            }
+            (hour, gen)
+        })
+        .collect();
     result.sort_by_key(|(h, _)| *h);
     Ok(result)
 }
 
 fn parse_hourly_load_xml(xml: &str) -> Result<Vec<(u32, f64)>> {
     let mut reader = Reader::from_str(xml);
-    let mut hourly: Vec<(u32, f64)> = Vec::new();
+    // Accumulate 15-min values per hour to average them
+    let mut hourly_acc: HashMap<u32, Vec<f64>> = HashMap::new();
     let mut current_position: Option<u32> = None;
     let mut in_position = false;
     let mut in_quantity = false;
@@ -394,9 +413,9 @@ fn parse_hourly_load_xml(xml: &str) -> Result<Vec<(u32, f64)>> {
                     in_position = false;
                 } else if in_quantity {
                     if let (Some(pos), Ok(qty)) = (current_position, text.parse::<f64>()) {
-                        let hour = pos.saturating_sub(1);
+                        let hour = (pos.saturating_sub(1)) / 4; // PT15M: 4 intervals per hour
                         if hour < 24 {
-                            hourly.push((hour, qty));
+                            hourly_acc.entry(hour).or_default().push(qty);
                         }
                     }
                     in_quantity = false;
@@ -409,9 +428,15 @@ fn parse_hourly_load_xml(xml: &str) -> Result<Vec<(u32, f64)>> {
         buf.clear();
     }
 
+    // Average 15-min values per hour
+    let mut hourly: Vec<(u32, f64)> = hourly_acc
+        .into_iter()
+        .map(|(hour, values)| {
+            let avg = values.iter().sum::<f64>() / values.len() as f64;
+            (hour, avg)
+        })
+        .collect();
     hourly.sort_by_key(|(h, _)| *h);
-    // Deduplicate: keep last value per hour
-    hourly.dedup_by_key(|(h, _)| *h);
     Ok(hourly)
 }
 
