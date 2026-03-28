@@ -6,8 +6,8 @@ mod routes;
 
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
-use tower_http::cors::CorsLayer;
+use axum::{http::HeaderValue, routing::get, Router};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -39,9 +39,13 @@ async fn main() {
     });
 
     let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
+        .allow_origin(AllowOrigin::list([
+            HeaderValue::from_static("http://localhost:3000"),
+            HeaderValue::from_static("https://frontend-gamma-pink-76.vercel.app"),
+            HeaderValue::from_static("https://plentra.vercel.app"),
+        ]))
         .allow_methods([axum::http::Method::GET, axum::http::Method::OPTIONS])
-        .allow_headers([axum::http::header::CONTENT_TYPE]);
+        .allow_headers(tower_http::cors::Any);
 
     let app = Router::new()
         .route("/health", get(routes::health::handler))
