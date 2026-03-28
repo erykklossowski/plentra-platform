@@ -15,6 +15,7 @@ pub fn round2(v: f64) -> f64 {
 #[derive(Debug, Deserialize, Clone)]
 pub struct PozRedozeRecord {
     pub dtime: String,
+    #[allow(dead_code)]
     pub period: String,
     pub business_date: String,
     pub pv_red_balance: Option<f64>,
@@ -25,6 +26,7 @@ pub struct PozRedozeRecord {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ReservePriceRecord {
+    #[allow(dead_code)]
     pub dtime: String,
     pub business_date: String,
     pub fcr_d: Option<f64>,
@@ -36,6 +38,7 @@ pub struct ReservePriceRecord {
     pub rr_g: Option<f64>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct ReserveVolumeRecord {
     pub dtime: String,
@@ -49,6 +52,7 @@ pub struct ReserveVolumeRecord {
     pub rr_g: Option<f64>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 pub struct KseDailyRecord {
     pub dtime: String,
@@ -138,7 +142,7 @@ pub fn estimate_ytd_gwh_field(
     daily_30d: &[DailyCurtailment],
     field: fn(&DailyCurtailment) -> f64,
 ) -> f64 {
-    let sum_30d_mwh: f64 = daily_30d.iter().map(|d| field(d)).sum();
+    let sum_30d_mwh: f64 = daily_30d.iter().map(field).sum();
     let day_of_year = chrono::Utc::now().ordinal() as f64;
     round2(sum_30d_mwh * (day_of_year / 30.0) / 1000.0)
 }
@@ -151,7 +155,7 @@ pub fn daily_avg_reserve_price(
     let values: Vec<f64> = records
         .iter()
         .filter(|r| r.business_date == date)
-        .filter_map(|r| field(r))
+        .filter_map(field)
         .collect();
     if values.is_empty() {
         return 0.0;

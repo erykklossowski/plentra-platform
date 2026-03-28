@@ -48,6 +48,7 @@ impl GenerationByType {
         self.get("B02")
     }
 
+    #[allow(dead_code)]
     pub fn nuclear_mw(&self) -> f64 {
         self.get("B14")
     }
@@ -111,6 +112,7 @@ pub async fn fetch_actual_load(
 }
 
 /// Fetch day-ahead generation forecast for wind/solar (document A69)
+#[allow(dead_code)]
 pub async fn fetch_generation_forecast(
     client: &reqwest::Client,
     token: &str,
@@ -322,6 +324,7 @@ fn parse_load_xml(xml: &str) -> Result<f64> {
     Ok(last_quantity)
 }
 
+#[allow(dead_code)]
 fn parse_forecast_xml(xml: &str) -> Result<(f64, f64)> {
     let mut reader = Reader::from_str(xml);
     let mut current_psr: Option<String> = None;

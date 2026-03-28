@@ -93,8 +93,7 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
             let curtailment_mwh: f64 = hourly_profile
                 .iter()
                 .map(|h| {
-                    let excess = (h.must_run_gw - h.residual_gw).max(0.0) * 1000.0; // MW
-                    excess // 1 hour * MW = MWh
+                    (h.must_run_gw - h.residual_gw).max(0.0) * 1000.0 // MW × 1h = MWh
                 })
                 .sum();
 
