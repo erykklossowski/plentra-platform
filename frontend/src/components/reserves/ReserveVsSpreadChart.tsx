@@ -9,12 +9,11 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import type { SpreadHistoryEntry, ReserveMonthlyHistory } from "@/types/api";
+import type { SpreadHistoryEntry, ReserveDailyHistory } from "@/types/api";
 
 interface ReserveVsSpreadChartProps {
-  reserveHistory: ReserveMonthlyHistory[];
+  reserveDaily: ReserveDailyHistory[];
   spreadHistory: SpreadHistoryEntry[];
-  currentAfrrG: number;
 }
 
 function CustomTooltip({
@@ -48,14 +47,19 @@ function CustomTooltip({
 }
 
 export default function ReserveVsSpreadChart({
+  reserveDaily,
   spreadHistory,
-  currentAfrrG,
 }: ReserveVsSpreadChartProps) {
-  // Build combined dataset from spread history with constant aFRR_G line
+  // Build a lookup from reserve daily data
+  const reserveByDate = new Map(
+    reserveDaily.map((r) => [r.date, r.afrr_g])
+  );
+
+  // Join spread history with reserve daily prices by date
   const combined = spreadHistory.map((s) => ({
     date: s.date,
     css: s.css,
-    afrr_g: currentAfrrG,
+    afrr_g: reserveByDate.get(s.date) ?? null,
   }));
 
   return (
@@ -108,7 +112,7 @@ export default function ReserveVsSpreadChart({
           strokeWidth={2}
           dot={false}
           name="aFRR ↑ (PLN/MW)"
-          strokeDasharray="6 3"
+          connectNulls
         />
         <Line
           yAxisId="right"

@@ -74,15 +74,14 @@ export default async function ReservesPage() {
       )}
 
       {/* Section 3: Reserve Price vs Clean Spark Spread */}
-      {spreads && spreads.history_30d.length > 0 && (
+      {spreads && spreads.history_30d.length > 0 && reserves.daily_30d && reserves.daily_30d.length > 0 && (
         <SectionModule
           title="Reserve Price vs Clean Spark Spread"
           subtitle="When CSS↓, generators seek reserve revenue compensation"
         >
           <ReserveVsSpreadChart
-            reserveHistory={reserves.history_13m}
+            reserveDaily={reserves.daily_30d}
             spreadHistory={spreads.history_30d}
-            currentAfrrG={reserves.prices.afrr_g_pln_mw}
           />
         </SectionModule>
       )}

@@ -234,9 +234,18 @@ export interface ReserveMonthlyHistory {
   rr_g: number;
 }
 
+export interface ReserveDailyHistory {
+  date: string;
+  afrr_g: number;
+  afrr_d: number;
+  mfrrd_g: number;
+  fcr_g: number;
+}
+
 export interface ReservesResponse {
   date: string;
   prices: ReservePrices;
+  daily_30d: ReserveDailyHistory[];
   history_13m: ReserveMonthlyHistory[];
   source: string;
   fetched_at: string;
