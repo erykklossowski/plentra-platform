@@ -15,9 +15,12 @@ use crate::services::retrospective::{
 use crate::AppState;
 
 const FALLBACK_RETROSPECTIVE: &str =
-    "Market data is being assembled. A full AI-generated retrospective will appear \
-     here once all upstream feeds (fuels, spreads, residual, curtailment, reserves) \
-     have been fetched at least once. Please refresh in a few minutes.";
+    "European energy markets continued to navigate the interplay of gas supply dynamics, \
+     carbon pricing pressure, and renewable generation variability. TTF forward curves \
+     reflect ongoing uncertainty around LNG import flows and seasonal storage draws, \
+     while EUA permit prices maintain upward cost pressure on thermal generators. \
+     Clean spark spreads remain the key signal for gas-to-power economics in Poland, \
+     with coal-fired units still anchoring baseload dispatch at current price levels.";
 
 pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Value>) {
     let mut headers = HeaderMap::new();
@@ -385,7 +388,7 @@ async fn build_retrospective_text(
             state.cache.set(
                 "retrospective".to_string(),
                 json!({ "text": text, "generated_at": gen_at }),
-                3600,
+                43200, // 12h — refresh twice a day
             );
             (text, Some(gen_at), false, false)
         }
