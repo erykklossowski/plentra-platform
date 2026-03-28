@@ -25,10 +25,13 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3600),
-            allowed_origins: vec![
-                "http://localhost:3000".to_string(),
-                "https://plentra.vercel.app".to_string(),
-            ],
+            allowed_origins: env::var("ALLOWED_ORIGINS")
+                .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_else(|_| vec![
+                    "http://localhost:3000".to_string(),
+                    "https://plentra.vercel.app".to_string(),
+                    "https://frontend-gamma-pink-76.vercel.app".to_string(),
+                ]),
         }
     }
 }

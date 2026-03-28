@@ -29,14 +29,26 @@ pub async fn fetch_commodity(client: &reqwest::Client, symbol: &str) -> Result<S
 
     let response = client
         .get(&url)
+        .header("Accept", "text/csv,text/plain,*/*")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .header("Referer", "https://stooq.com/")
         .send()
         .await
         .context(format!("Failed to fetch {symbol} from Stooq"))?;
 
+    let status = response.status();
     let text = response
         .text()
         .await
         .context(format!("Failed to read response body for {symbol}"))?;
+
+    tracing::info!(
+        "Stooq response for {symbol}: status={status}, body_len={}, first_100='{}'",
+        text.len(),
+        &text[..text.len().min(100)]
+    );
+
+    anyhow::ensure!(!text.is_empty(), "Empty response from Stooq for {symbol}");
 
     parse_csv(&text, symbol)
 }

@@ -7,7 +7,7 @@ mod routes;
 use std::sync::Arc;
 
 use axum::{routing::get, Router};
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -28,24 +28,18 @@ async fn main() {
     let config = config::Config::from_env();
     let port = config.port;
 
-    let origins: Vec<_> = config
-        .allowed_origins
-        .iter()
-        .filter_map(|o| o.parse().ok())
-        .collect();
-
     let state = Arc::new(AppState {
         config,
         cache: cache::Cache::new(),
         http_client: reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (compatible; PlentraBot/1.0)")
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("failed to build HTTP client"),
     });
 
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::list(origins))
+        .allow_origin(tower_http::cors::Any)
         .allow_methods([axum::http::Method::GET, axum::http::Method::OPTIONS])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 

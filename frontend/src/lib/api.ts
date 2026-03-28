@@ -12,7 +12,9 @@ async function apiFetch<T>(path: string): Promise<T> {
     next: { revalidate: 900 },
   });
   if (!res.ok) throw new Error(`API error: ${res.status} ${path}`);
-  return res.json();
+  const data = await res.json();
+  if (data.error) throw new Error(`API error: ${data.error}`);
+  return data as T;
 }
 
 export const getSummary = () => apiFetch<SummaryResponse>("/api/summary");

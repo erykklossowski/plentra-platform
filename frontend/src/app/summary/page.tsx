@@ -5,19 +5,22 @@ import MarketSummaryModule from "@/components/summary/MarketSummaryModule";
 import KeyIndicatorsTable from "@/components/summary/KeyIndicatorsTable";
 import IndustrialSpreadMonitor from "@/components/summary/IndustrialSpreadMonitor";
 import SpreadChart from "@/components/charts/SpreadChart";
+import type { SummaryResponse, FuelsResponse, SpreadsResponse } from "@/types/api";
 
 export const revalidate = 900;
 
 export default async function SummaryPage() {
-  let summary, fuels, spreads;
+  const [summaryResult, fuelsResult, spreadsResult] = await Promise.allSettled([
+    getSummary(),
+    getFuels(),
+    getSpreads(),
+  ]);
 
-  try {
-    [summary, fuels, spreads] = await Promise.all([
-      getSummary(),
-      getFuels(),
-      getSpreads(),
-    ]);
-  } catch {
+  const summary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
+  const fuels = fuelsResult.status === "fulfilled" ? fuelsResult.value : null;
+  const spreads = spreadsResult.status === "fulfilled" ? spreadsResult.value : null;
+
+  if (!summary) {
     return (
       <div className="p-8">
         <div className="bg-surface-container p-6 rounded-xl text-center">
@@ -73,36 +76,50 @@ export default async function SummaryPage() {
 
         {/* Right Column */}
         <div className="col-span-12 lg:col-span-5 space-y-6">
-          {/* Fuel Price Cards */}
-          <MetricCard
-            label="Natural Gas (TTF)"
-            value={`€${fuels.ttf_eur_mwh.toFixed(2)}`}
-            unit="/MWh"
-            delta={fuels.ttf_change_pct}
-            history={fuels.ttf_history_30d}
-          />
-          <MetricCard
-            label="Coal ARA"
-            value={`$${fuels.ara_usd_tonne.toFixed(2)}`}
-            unit="/tonne"
-            delta={fuels.ara_change_pct}
-            history={fuels.ara_history_30d}
-          />
-          <MetricCard
-            label="EUA Carbon"
-            value={`€${fuels.eua_eur_tonne.toFixed(2)}`}
-            unit="/tonne"
-            delta={fuels.eua_change_pct}
-            history={fuels.eua_history_30d}
-          />
+          {fuels ? (
+            <>
+              <MetricCard
+                label="Natural Gas (TTF)"
+                value={`€${fuels.ttf_eur_mwh.toFixed(2)}`}
+                unit="/MWh"
+                delta={fuels.ttf_change_pct}
+                history={fuels.ttf_history_30d}
+              />
+              <MetricCard
+                label="Coal ARA"
+                value={`$${fuels.ara_usd_tonne.toFixed(2)}`}
+                unit="/tonne"
+                delta={fuels.ara_change_pct}
+                history={fuels.ara_history_30d}
+              />
+              <MetricCard
+                label="EUA Carbon"
+                value={`€${fuels.eua_eur_tonne.toFixed(2)}`}
+                unit="/tonne"
+                delta={fuels.eua_change_pct}
+                history={fuels.eua_history_30d}
+              />
+            </>
+          ) : (
+            <div className="bg-surface-container p-6 rounded-xl text-center">
+              <span className="material-symbols-outlined text-2xl text-on-surface-variant mb-2">
+                cloud_off
+              </span>
+              <p className="text-sm text-on-surface-variant">
+                Fuel price data temporarily unavailable
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Key Market Indicators */}
-      <KeyIndicatorsTable indicators={summary.key_indicators} />
+      {summary.key_indicators.length > 0 && (
+        <KeyIndicatorsTable indicators={summary.key_indicators} />
+      )}
 
       {/* Spread Chart */}
-      {spreads.history_30d.length > 0 && (
+      {spreads && spreads.history_30d.length > 0 && (
         <div className="bg-surface-container p-6 rounded-xl">
           <h2 className="font-headline text-lg font-bold text-on-surface mb-4">
             Clean Spark & Dark Spread History (30d)
@@ -112,7 +129,9 @@ export default async function SummaryPage() {
       )}
 
       {/* Industrial Spread Monitor */}
-      <IndustrialSpreadMonitor spread={summary.industrial_spread} />
+      {summary.industrial_spread.baseload_eur_mwh !== undefined && (
+        <IndustrialSpreadMonitor spread={summary.industrial_spread} />
+      )}
     </div>
   );
 }
