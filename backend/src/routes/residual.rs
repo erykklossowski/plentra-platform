@@ -122,6 +122,7 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 correlation_r: r,
                 correlation_r2: r2,
                 correlation_p: p,
+                is_estimate: true, // Derived from residual demand model, not PSE A77
                 fetched_at: Utc::now().to_rfc3339(),
                 stale: None,
             };

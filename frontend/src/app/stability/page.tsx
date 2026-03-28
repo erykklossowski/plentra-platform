@@ -127,6 +127,7 @@ export default async function StabilityPage() {
         forecastGwh={residual.forecast_curtailment_gwh}
         windGwh={residual.wind_reduction_gwh}
         solarGwh={residual.solar_reduction_gwh}
+        isEstimate={residual.is_estimate}
       />
     </div>
   );

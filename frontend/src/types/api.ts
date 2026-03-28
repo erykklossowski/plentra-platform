@@ -178,5 +178,7 @@ export interface ResidualResponse {
   correlation_r: number;
   correlation_r2: number;
   correlation_p: number;
+  is_estimate: boolean;
   fetched_at: string;
+  stale?: boolean;
 }

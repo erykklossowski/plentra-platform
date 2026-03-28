@@ -5,6 +5,7 @@ interface CurtailmentSummaryProps {
   forecastGwh: number;
   windGwh: number;
   solarGwh: number;
+  isEstimate?: boolean;
 }
 
 interface StatBoxProps {
@@ -38,6 +39,7 @@ export default function CurtailmentSummary({
   forecastGwh,
   windGwh,
   solarGwh,
+  isEstimate,
 }: CurtailmentSummaryProps) {
   return (
     <SectionModule
@@ -70,6 +72,12 @@ export default function CurtailmentSummary({
           icon="wb_sunny"
         />
       </div>
+      {isEstimate && (
+        <p className="text-[10px] text-on-surface-variant italic mt-3 text-center">
+          * Estimates derived from residual demand model. PSE A77 subscription
+          required for official curtailment data.
+        </p>
+      )}
     </SectionModule>
   );
 }
