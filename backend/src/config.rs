@@ -4,6 +4,7 @@ use std::env;
 pub struct Config {
     pub port: u16,
     pub entsoe_token: Option<String>,
+    pub anthropic_api_key: Option<String>,
     pub cache_ttl_fuels: u64,
     pub cache_ttl_entsoe: u64,
     pub allowed_origins: Vec<String>,
@@ -17,6 +18,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8080),
             entsoe_token: env::var("ENTSOE_TOKEN").ok(),
+            anthropic_api_key: env::var("ANTHROPIC_API_KEY").ok(),
             cache_ttl_fuels: env::var("CACHE_TTL_FUELS")
                 .ok()
                 .and_then(|v| v.parse().ok())

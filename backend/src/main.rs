@@ -3,6 +3,7 @@ mod config;
 mod fetchers;
 mod models;
 mod routes;
+mod services;
 
 use std::sync::Arc;
 
