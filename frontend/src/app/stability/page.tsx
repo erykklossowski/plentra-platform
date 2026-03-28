@@ -1,4 +1,4 @@
-import { getResidual } from "@/lib/api";
+import { getResidual, getCurtailment } from "@/lib/api";
 import LiveBadge from "@/components/ui/LiveBadge";
 import MetricCard from "@/components/ui/MetricCard";
 import SectionModule from "@/components/ui/SectionModule";
@@ -7,12 +7,17 @@ import HeatmapGrid from "@/components/charts/HeatmapGrid";
 import ScatterPlot from "@/components/charts/ScatterPlot";
 import ResidualDemandChart from "@/components/stability/ResidualDemandChart";
 import CurtailmentSummary from "@/components/stability/CurtailmentSummary";
+import CurtailmentByCause from "@/components/stability/CurtailmentByCause";
 
 export const revalidate = 3600;
 
 export default async function StabilityPage() {
-  const [residualResult] = await Promise.allSettled([getResidual()]);
+  const [residualResult, curtailmentResult] = await Promise.allSettled([
+    getResidual(),
+    getCurtailment(),
+  ]);
   const residual = residualResult.status === "fulfilled" ? residualResult.value : null;
+  const curtailment = curtailmentResult.status === "fulfilled" ? curtailmentResult.value : null;
 
   if (!residual) {
     return (
@@ -122,13 +127,26 @@ export default async function StabilityPage() {
       </SectionModule>
 
       {/* Section E: Curtailment */}
-      <CurtailmentSummary
-        ytdGwh={residual.ytd_curtailment_gwh}
-        forecastGwh={residual.forecast_curtailment_gwh}
-        windGwh={residual.wind_reduction_gwh}
-        solarGwh={residual.solar_reduction_gwh}
-        isEstimate={residual.is_estimate}
-      />
+      {curtailment ? (
+        <CurtailmentSummary
+          ytdGwh={curtailment.ytd_total_gwh}
+          forecastGwh={curtailment.ytd_total_gwh * (365 / (new Date().getMonth() * 30 + new Date().getDate() || 1))}
+          windGwh={curtailment.ytd_wind_gwh}
+          solarGwh={curtailment.ytd_solar_gwh}
+        />
+      ) : (
+        <CurtailmentSummary
+          ytdGwh={residual.ytd_curtailment_gwh}
+          forecastGwh={residual.forecast_curtailment_gwh}
+          windGwh={residual.wind_reduction_gwh}
+          solarGwh={residual.solar_reduction_gwh}
+        />
+      )}
+
+      {/* Section F: Curtailment by Cause */}
+      {curtailment && curtailment.hourly_profile.length > 0 && (
+        <CurtailmentByCause hourlyProfile={curtailment.hourly_profile} />
+      )}
     </div>
   );
 }

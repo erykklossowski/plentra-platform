@@ -171,6 +171,44 @@ export interface EuropeResponse {
   stale?: boolean;
 }
 
+// ─── Curtailment (Phase 5b) ───
+
+export interface CurtailmentHourly {
+  hour: number;
+  wind_balance_mwh: number;
+  wind_network_mwh: number;
+  pv_balance_mwh: number;
+  pv_network_mwh: number;
+  total_mwh: number;
+}
+
+export interface CurtailmentDaily {
+  date: string;
+  pv_balance_mwh: number;
+  pv_network_mwh: number;
+  wi_balance_mwh: number;
+  wi_network_mwh: number;
+  total_mwh: number;
+}
+
+export interface CurtailmentResponse {
+  today_total_mwh: number;
+  today_wind_balance_mwh: number;
+  today_wind_network_mwh: number;
+  today_pv_balance_mwh: number;
+  today_pv_network_mwh: number;
+  ytd_total_gwh: number;
+  ytd_wind_gwh: number;
+  ytd_solar_gwh: number;
+  ytd_network_gwh: number;
+  ytd_balance_gwh: number;
+  hourly_profile: CurtailmentHourly[];
+  daily_30d: CurtailmentDaily[];
+  is_estimate: boolean;
+  source: string;
+  fetched_at: string;
+}
+
 // ─── Stability (Phase 2) ───
 
 export interface ResidualResponse {

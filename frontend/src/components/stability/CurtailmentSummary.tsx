@@ -72,12 +72,9 @@ export default function CurtailmentSummary({
           icon="wb_sunny"
         />
       </div>
-      {isEstimate && (
-        <p className="text-[10px] text-on-surface-variant italic mt-3 text-center">
-          * Estimates derived from residual demand model. PSE A77 subscription
-          required for official curtailment data.
-        </p>
-      )}
+      <p className="text-[10px] text-on-surface-variant/60 text-center mt-2">
+        Source: PSE POZE-REDOZE · 15-min granularity
+      </p>
     </SectionModule>
   );
 }
