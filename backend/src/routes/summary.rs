@@ -6,8 +6,9 @@ use axum::Json;
 use chrono::Utc;
 use serde_json::{json, Value};
 
+use crate::fetchers::stooq;
 use crate::models::fuel::FuelData;
-use crate::models::spread::SpreadData;
+use crate::models::spread::{SpreadData, SpreadHistoryEntry};
 use crate::services::retrospective::{
     build_retrospective_prompt, generate_retrospective, RetrospectiveInput,
 };
@@ -135,7 +136,7 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     };
 
     // ─── LLM Retrospective ───
-    let (retrospective_text, retrospective_generated_at, retrospective_stale) =
+    let (retrospective_text, retrospective_generated_at, retrospective_stale, retro_is_fallback) =
         build_retrospective_text(&state, &fuel, &spread, &month_name).await;
 
     let summary = json!({
@@ -176,27 +177,32 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         "fetched_at": now.to_rfc3339()
     });
 
-    state
-        .cache
-        .set("summary".to_string(), summary.clone(), state.config.cache_ttl_fuels);
+    // Only cache when we have a real LLM-generated retrospective
+    if !retro_is_fallback {
+        state
+            .cache
+            .set("summary".to_string(), summary.clone(), state.config.cache_ttl_fuels);
+    }
 
     (headers, Json(summary))
 }
 
+/// Returns `(text, generated_at, is_stale, is_fallback)`.
+/// `is_fallback = true` means we couldn't generate a real retrospective; caller must not cache.
 async fn build_retrospective_text(
     state: &Arc<AppState>,
-    fuel: &Option<FuelData>,
-    spread: &Option<SpreadData>,
+    fuel_opt: &Option<FuelData>,
+    spread_opt: &Option<SpreadData>,
     month_name: &str,
-) -> (String, Option<String>, bool) {
+) -> (String, Option<String>, bool, bool) {
     // Check if we have a cached retrospective that's still fresh
     if let Some(cached) = state.cache.get("retrospective") {
         let text = cached.data["text"].as_str().unwrap_or(FALLBACK_RETROSPECTIVE).to_string();
         let gen_at = cached.data["generated_at"].as_str().map(|s| s.to_string());
-        return (text, gen_at, false);
+        return (text, gen_at, false, false);
     }
 
-    // No API key → use fallback
+    // No API key → use month-name fallback (not cached)
     let api_key = match &state.config.anthropic_api_key {
         Some(key) if !key.is_empty() => key.clone(),
         _ => {
@@ -207,11 +213,96 @@ async fn build_retrospective_text(
                  Clean spark spreads remained positive, supporting gas-fired generation dispatch, \
                  while clean dark spreads stayed negative, indicating challenging economics for coal-fired units."
             );
-            return (fallback, None, false);
+            return (fallback, None, false, false); // no API key — not a fallback in the caching sense
         }
     };
 
-    // Gather data from caches for LLM prompt
+    // Resolve fuel data — use cached value or actively fetch from Stooq
+    let fuel: FuelData = if let Some(f) = fuel_opt.clone() {
+        f
+    } else {
+        let (ttf_res, ara_res, eua_res) = tokio::join!(
+            stooq::fetch_ttf(&state.http_client),
+            stooq::fetch_ara(&state.http_client),
+            stooq::fetch_eua(&state.http_client),
+        );
+        match (ttf_res, ara_res, eua_res) {
+            (Ok(ttf), Ok(ara), Ok(eua)) => {
+                let fd = FuelData {
+                    ttf_eur_mwh: ttf.current_price,
+                    ttf_change_pct: ttf.change_pct,
+                    ttf_history_30d: ttf.history_30d,
+                    ara_usd_tonne: ara.current_price,
+                    ara_change_pct: ara.change_pct,
+                    ara_history_30d: ara.history_30d,
+                    eua_eur_tonne: eua.current_price,
+                    eua_change_pct: eua.change_pct,
+                    eua_history_30d: eua.history_30d,
+                    fetched_at: Utc::now().to_rfc3339(),
+                    stale: None,
+                };
+                let v = serde_json::to_value(&fd).unwrap();
+                state.cache.set("fuels".to_string(), v, state.config.cache_ttl_fuels);
+                fd
+            }
+            _ => {
+                tracing::warn!("summary: fuel fetch failed on cold start — using fallback");
+                return (FALLBACK_RETROSPECTIVE.to_string(), None, false, true);
+            }
+        }
+    };
+
+    // Resolve spread data — compute from fuel if not cached
+    let spread: SpreadData = if let Some(s) = spread_opt.clone() {
+        s
+    } else {
+        const RDN: f64 = 85.0;
+        const EUR_USD: f64 = 1.08;
+        let css = ((RDN - (fuel.ttf_eur_mwh / 0.60) - (fuel.eua_eur_tonne * 0.202)) * 100.0).round() / 100.0;
+        let ara_eur_gj = (fuel.ara_usd_tonne / EUR_USD) / 29.31;
+        let cds42 = ((RDN - (ara_eur_gj / 0.42) - (fuel.eua_eur_tonne * 0.341)) * 100.0).round() / 100.0;
+        let cds34 = ((RDN - (ara_eur_gj / 0.34) - (fuel.eua_eur_tonne * 0.341)) * 100.0).round() / 100.0;
+        let dispatch_signal = if css > 0.0 && css > cds42 {
+            "GAS_MARGINAL"
+        } else if cds42 > 0.0 && cds42 > css {
+            "COAL_MARGINAL"
+        } else {
+            "NEGATIVE_SPREADS"
+        };
+        let len = fuel.ttf_history_30d.len().min(fuel.ara_history_30d.len()).min(fuel.eua_history_30d.len());
+        let history: Vec<SpreadHistoryEntry> = (0..len).map(|i| {
+            let t = fuel.ttf_history_30d[i];
+            let a = fuel.ara_history_30d[i];
+            let e = fuel.eua_history_30d[i];
+            let ag = (a / EUR_USD) / 29.31;
+            SpreadHistoryEntry {
+                date: format!("day-{}", i + 1),
+                css: ((RDN - (t / 0.60) - (e * 0.202)) * 100.0).round() / 100.0,
+                cds_42: ((RDN - (ag / 0.42) - (e * 0.341)) * 100.0).round() / 100.0,
+            }
+        }).collect();
+        let sd = SpreadData {
+            css_spot: css,
+            css_spot_pct_change: 0.0,
+            cds_spot_eta34: cds34,
+            cds_spot_eta42: cds42,
+            cds_spot_pct_change: 0.0,
+            css_term_y1: (css * 0.95 * 100.0).round() / 100.0,
+            cds_term_y1: None,
+            baseload_profitability_eur_mwh: css.max(0.0),
+            peak_load_advantage_eur_mwh: (css * 1.4 * 100.0).round() / 100.0,
+            carbon_impact_factor: (-fuel.eua_eur_tonne * 0.202 * 100.0).round() / 100.0,
+            dispatch_signal: dispatch_signal.to_string(),
+            history_30d: history,
+            fetched_at: Utc::now().to_rfc3339(),
+            stale: None,
+        };
+        let v = serde_json::to_value(&sd).unwrap();
+        state.cache.set("spreads".to_string(), v, state.config.cache_ttl_fuels);
+        sd
+    };
+
+    // Gather optional contextual data from caches
     let residual_data = state
         .cache
         .get("residual")
@@ -225,13 +316,8 @@ async fn build_retrospective_text(
         .get("pse_reserves")
         .or_else(|| state.cache.get_stale("pse_reserves"));
 
-    // Need at minimum fuel + spread data
-    let (f, s) = match (fuel, spread) {
-        (Some(f), Some(s)) => (f, s),
-        _ => {
-            return (FALLBACK_RETROSPECTIVE.to_string(), None, false);
-        }
-    };
+    let f = &fuel;
+    let s = &spread;
 
     let input = RetrospectiveInput {
         rdn_pln_mwh: f.ttf_eur_mwh * 4.3 * 1.12, // approximate RDN from TTF
@@ -296,13 +382,12 @@ async fn build_retrospective_text(
     match generate_retrospective(&state.http_client, prompt, &api_key).await {
         Ok(text) => {
             let gen_at = Utc::now().to_rfc3339();
-            // Cache the result
             state.cache.set(
                 "retrospective".to_string(),
                 json!({ "text": text, "generated_at": gen_at }),
                 3600,
             );
-            (text, Some(gen_at), false)
+            (text, Some(gen_at), false, false)
         }
         Err(e) => {
             tracing::warn!("Claude API error: {e}");
@@ -313,9 +398,9 @@ async fn build_retrospective_text(
                     .unwrap_or(FALLBACK_RETROSPECTIVE)
                     .to_string();
                 let gen_at = stale.data["generated_at"].as_str().map(|s| s.to_string());
-                (text, gen_at, true)
+                (text, gen_at, true, false)
             } else {
-                (FALLBACK_RETROSPECTIVE.to_string(), None, false)
+                (FALLBACK_RETROSPECTIVE.to_string(), None, false, true)
             }
         }
     }
