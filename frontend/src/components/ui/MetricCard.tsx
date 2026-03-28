@@ -51,21 +51,38 @@ export default function MetricCard({
 }
 
 function DeltaChip({ value }: { value: number }) {
-  const isPositive = value >= 0;
+  // Use threshold to avoid floating point noise
+  const isPositive = value > 0.05;
+  const isNegative = value < -0.05;
+  const isNeutral = !isPositive && !isNegative;
+
+  const chipClass = isPositive
+    ? "bg-emerald-500/10 text-emerald-400"
+    : isNegative
+    ? "bg-error/10 text-error"
+    : "bg-surface-container-high text-on-surface-variant";
+
+  const icon = isPositive
+    ? "arrow_upward"
+    : isNegative
+    ? "arrow_downward"
+    : "arrow_forward";
+
+  const label = isPositive
+    ? `+${value.toFixed(1)}%`
+    : isNeutral
+    ? `${value.toFixed(1)}%`
+    : `${value.toFixed(1)}%`;
+
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium",
-        isPositive
-          ? "bg-emerald-500/10 text-emerald-400"
-          : "bg-error/10 text-error"
+        chipClass
       )}
     >
-      <span className="material-symbols-outlined text-[14px]">
-        {isPositive ? "arrow_upward" : "arrow_downward"}
-      </span>
-      {isPositive ? "+" : ""}
-      {value.toFixed(1)}%
+      <span className="material-symbols-outlined text-[14px]">{icon}</span>
+      {label}
     </span>
   );
 }

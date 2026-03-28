@@ -23,6 +23,7 @@ export interface SpreadsResponse {
   css_spot_pct_change: number;
   cds_spot_eta34: number;
   cds_spot_eta42: number;
+  cds_spot_pct_change: number;
   css_term_y1: number;
   cds_term_y1: number | null;
   baseload_profitability_eur_mwh: number;

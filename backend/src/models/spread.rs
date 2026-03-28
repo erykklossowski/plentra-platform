@@ -13,6 +13,7 @@ pub struct SpreadData {
     pub css_spot_pct_change: f64,
     pub cds_spot_eta34: f64,
     pub cds_spot_eta42: f64,
+    pub cds_spot_pct_change: f64,
     pub css_term_y1: f64,
     pub cds_term_y1: Option<f64>,
     pub baseload_profitability_eur_mwh: f64,

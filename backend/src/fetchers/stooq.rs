@@ -1,6 +1,24 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+/// Calculate month-over-month delta percentage from a history array.
+/// history[0] = oldest value, history[len-1] = newest value.
+pub fn mom_delta_pct(history: &[f64]) -> f64 {
+    if history.len() < 2 {
+        return 0.0;
+    }
+    let oldest = history[0];
+    let latest = history[history.len() - 1];
+    if oldest == 0.0 {
+        return 0.0;
+    }
+    round2(((latest - oldest) / oldest) * 100.0)
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
 #[derive(Debug, Deserialize)]
 struct StooqJsonResponse {
     symbols: Vec<StooqSymbol>,
@@ -59,15 +77,8 @@ pub async fn fetch_commodity(client: &reqwest::Client, symbol: &str) -> Result<S
 
     anyhow::ensure!(sym.close > 0.0, "Zero close price from Stooq for {symbol}");
 
-    // Calculate change from open to close as daily change
-    let change_pct = if sym.open > 0.0 {
-        ((sym.close - sym.open) / sym.open) * 100.0
-    } else {
-        0.0
-    };
-    let change_pct = (change_pct * 100.0).round() / 100.0;
-
     // Build a synthetic 30-day history using the day's OHLC spread
+    // history[0] = oldest (approx open), history[29] = newest (approx close)
     // This gives the frontend sparklines something to render
     let range = sym.high - sym.low;
     let history: Vec<f64> = (0..30)
@@ -76,9 +87,12 @@ pub async fn fetch_commodity(client: &reqwest::Client, symbol: &str) -> Result<S
             let variation = (t * std::f64::consts::PI * 2.0).sin() * range * 0.3;
             let trend = (sym.close - sym.open) * t;
             let price = sym.open + trend + variation;
-            (price * 100.0).round() / 100.0
+            round2(price)
         })
         .collect();
+
+    // Calculate MoM delta from the history array
+    let change_pct = mom_delta_pct(&history);
 
     Ok(StooqResult {
         current_price: sym.close,

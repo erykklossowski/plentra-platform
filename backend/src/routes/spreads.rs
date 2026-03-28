@@ -126,17 +126,11 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         })
         .collect();
 
-    // Calculate percentage changes from history
-    let css_pct_change = if history.len() >= 2 {
-        let prev = history[history.len() - 2].css;
-        if prev.abs() > 0.01 {
-            round2(((css_spot - prev) / prev.abs()) * 100.0)
-        } else {
-            0.0
-        }
-    } else {
-        0.0
-    };
+    // Calculate MoM percentage changes from history arrays
+    let css_history: Vec<f64> = history.iter().map(|h| h.css).collect();
+    let cds_history: Vec<f64> = history.iter().map(|h| h.cds_42).collect();
+    let css_pct_change = crate::fetchers::stooq::mom_delta_pct(&css_history);
+    let cds_pct_change = crate::fetchers::stooq::mom_delta_pct(&cds_history);
 
     let carbon_impact = round2(-fuel.eua_eur_tonne * 0.202);
 
@@ -145,6 +139,7 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         css_spot_pct_change: css_pct_change,
         cds_spot_eta34,
         cds_spot_eta42,
+        cds_spot_pct_change: cds_pct_change,
         css_term_y1: round2(css_spot * 0.95), // approximate term value
         cds_term_y1: None,
         baseload_profitability_eur_mwh: round2(css_spot.max(0.0)),
