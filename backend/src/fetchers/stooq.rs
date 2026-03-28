@@ -99,15 +99,15 @@ fn parse_csv(csv_text: &str, symbol: &str) -> Result<StooqResult> {
 }
 
 pub async fn fetch_ttf(client: &reqwest::Client) -> Result<StooqResult> {
-    fetch_commodity(client, "ttf.f").await
+    fetch_commodity(client, "tg.f").await
 }
 
 pub async fn fetch_eua(client: &reqwest::Client) -> Result<StooqResult> {
-    fetch_commodity(client, "co2e.f").await
+    fetch_commodity(client, "ck.f").await
 }
 
 pub async fn fetch_ara(client: &reqwest::Client) -> Result<StooqResult> {
-    fetch_commodity(client, "arac.f").await
+    fetch_commodity(client, "lu.f").await
 }
 
 #[cfg(test)]

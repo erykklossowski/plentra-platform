@@ -19,3 +19,4 @@ anyhow = "1"
 tokio-cron-scheduler = "0.10"
 csv = "1"
 dotenvy = "0.15"
+quick-xml = { version = "0.37", features = ["serialize"] }
