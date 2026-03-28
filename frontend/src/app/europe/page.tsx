@@ -1,4 +1,5 @@
 import { getEurope } from "@/lib/api";
+import EuropeMap from "@/components/europe/EuropeMap";
 import EURankingBar from "@/components/europe/EURankingBar";
 
 export const revalidate = 3600;
@@ -118,6 +119,14 @@ export default async function EuropePage() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Europe Map */}
+      <div className="bg-surface-container p-6 rounded-xl">
+        <h2 className="font-headline text-lg font-bold text-on-surface mb-4">
+          DA Price Map — European Bidding Zones
+        </h2>
+        <EuropeMap data={data.rankings} />
       </div>
 
       {/* Ranking Bars */}
