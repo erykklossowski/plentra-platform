@@ -62,28 +62,20 @@ pub async fn handler(
                         .into_response()
                 }
             };
-            match backfill_databento(&api_key, &pool, days).await {
-                Ok(n) => {
-                    tracing::info!("Databento backfill: {} rows written", n);
-                    Json(json!({
-                        "status": "done",
-                        "source": "databento",
-                        "days": days,
-                        "rows_written": n,
-                        "instruments": ["TTF", "EUA", "ARA"]
-                    }))
-                    .into_response()
+            tokio::spawn(async move {
+                match backfill_databento(&api_key, &pool, days).await {
+                    Ok(n) => tracing::info!("Databento backfill: {} rows written", n),
+                    Err(e) => tracing::error!("Databento backfill failed: {}", e),
                 }
-                Err(e) => {
-                    tracing::error!("Databento backfill failed: {}", e);
-                    Json(json!({
-                        "status": "error",
-                        "source": "databento",
-                        "error": format!("{}", e)
-                    }))
-                    .into_response()
-                }
-            }
+            });
+            Json(json!({
+                "status": "backfill started",
+                "source": "databento",
+                "days": days,
+                "instruments": ["TTF", "EUA", "ARA"],
+                "note": "check Railway logs for progress"
+            }))
+            .into_response()
         }
         "stooq" => {
             Json(json!({
