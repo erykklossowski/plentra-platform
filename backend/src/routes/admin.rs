@@ -114,10 +114,116 @@ pub async fn handler(
             }))
             .into_response()
         }
+        "databento_debug" => {
+            let api_key = match config.databento_api_key {
+                Some(k) => k,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": "DATABENTO_API_KEY not set"})),
+                    )
+                        .into_response()
+                }
+            };
+            // Use symbology resolve to discover correct symbols, then try fetching stats
+            let candidates: Vec<(&str, &str, &str)> = vec![
+                // TTF Natural Gas candidates
+                ("IFEU.IMPACT", "TFM.FUT", "TTF?"),
+                ("IFEU.IMPACT", "TTF.FUT", "TTF?"),
+                ("IFEU.IMPACT", "TFU.FUT", "TTF?"),
+                ("IFEU.IMPACT", "TF.FUT", "TTF?"),
+                ("IFEU.IMPACT", "TTFM.FUT", "TTF?"),
+                ("NDEX.IMPACT", "TFM.FUT", "TTF?"),
+                ("NDEX.IMPACT", "TTF.FUT", "TTF?"),
+                // EUA Carbon candidates
+                ("IFEU.IMPACT", "ECF.FUT", "EUA?"),
+                ("IFEU.IMPACT", "CKM.FUT", "EUA?"),
+                ("IFEU.IMPACT", "EUA.FUT", "EUA?"),
+                ("IFEU.IMPACT", "CFI.FUT", "EUA?"),
+                ("NDEX.IMPACT", "ECF.FUT", "EUA?"),
+                // ARA Coal candidates
+                ("IFEU.IMPACT", "ATW.FUT", "ARA?"),
+                ("IFEU.IMPACT", "MTF.FUT", "ARA?"),
+            ];
+            let resp_candidates: Vec<String> = candidates.iter().map(|(d,s,l)| format!("{} {}/{}", l, d, s)).collect();
+            tokio::spawn(async move {
+                use databento::{
+                    dbn::SType,
+                    historical::symbology::ResolveParams,
+                    HistoricalClient,
+                };
+                // Group candidates by dataset
+                for dataset in &["IFEU.IMPACT", "NDEX.IMPACT"] {
+                    let syms: Vec<&str> = candidates.iter()
+                        .filter(|(d, _, _)| d == dataset)
+                        .map(|(_, s, _)| *s)
+                        .collect();
+                    if syms.is_empty() { continue; }
+
+                    tracing::info!("DATABENTO_DEBUG: resolving {} symbols on {}", syms.len(), dataset);
+
+                    let client_result = HistoricalClient::builder()
+                        .key(api_key.as_str())
+                        .and_then(|b| Ok(b.build()?));
+                    let mut client = match client_result {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!("DATABENTO_DEBUG: client build failed: {}", e);
+                            continue;
+                        }
+                    };
+
+                    let sym_strings: Vec<String> = syms.iter().map(|s| s.to_string()).collect();
+                    let resolve_result = client.symbology().resolve(
+                        &ResolveParams::builder()
+                            .dataset(dataset.to_string())
+                            .symbols(sym_strings)
+                            .stype_in(SType::RawSymbol)
+                            .stype_out(SType::InstrumentId)
+                            .date_range(
+                                time::macros::date!(2026-03-27)
+                                    ..time::macros::date!(2026-03-28)
+                            )
+                            .build(),
+                    ).await;
+
+                    match resolve_result {
+                        Ok(resolution) => {
+                            tracing::info!(
+                                "DATABENTO_DEBUG: resolve OK on {} — result: {:?}",
+                                dataset, resolution
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "DATABENTO_DEBUG: resolve failed on {}: {}",
+                                dataset, e
+                            );
+                        }
+                    }
+                }
+
+                // Also try fetching stats for each candidate individually
+                for (dataset, symbol, label) in &candidates {
+                    tracing::info!("DATABENTO_DEBUG: trying stats {} {} / {}", label, dataset, symbol);
+                    match crate::fetchers::databento::debug_print_stats(&api_key, dataset, symbol).await {
+                        Ok(()) => tracing::info!("DATABENTO_DEBUG: {} {} / {} — OK", label, dataset, symbol),
+                        Err(e) => tracing::warn!("DATABENTO_DEBUG: {} {} / {} — {}", label, dataset, symbol, e),
+                    }
+                }
+                tracing::info!("DATABENTO_DEBUG: all candidates tested — check logs above");
+            });
+            Json(json!({
+                "status": "debug started",
+                "note": "check Railway logs for symbol resolution results",
+                "candidates": resp_candidates
+            }))
+            .into_response()
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, databento_debug, curtailment, reserves"})),
             )
                 .into_response()
         }
