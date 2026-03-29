@@ -230,10 +230,10 @@ pub async fn curtailment_handler(
     let rows = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, Option<f64>, Option<f64>, Option<f64>, Option<f64>)>(
         r#"SELECT
                time_bucket($1::interval, ts) AS bucket,
-               SUM(wi_balance_mwh) AS wi_balance_mwh,
-               SUM(wi_network_mwh) AS wi_network_mwh,
-               SUM(pv_balance_mwh) AS pv_balance_mwh,
-               SUM(pv_network_mwh) AS pv_network_mwh
+               SUM(wi_balance_mw) * 0.25 AS wi_balance_mwh,
+               SUM(wi_network_mw) * 0.25 AS wi_network_mwh,
+               SUM(pv_balance_mw) * 0.25 AS pv_balance_mwh,
+               SUM(pv_network_mw) * 0.25 AS pv_network_mwh
            FROM curtailment_15min
            WHERE ts >= $2::date AND ts <= $3::date
            GROUP BY bucket

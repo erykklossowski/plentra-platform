@@ -99,9 +99,9 @@ async fn backfill_stooq(
     days: i64,
 ) -> anyhow::Result<usize> {
     let tickers = [
-        ("tg.f", "TTF", "EUR/MWh"),
-        ("ck.f", "EUA", "EUR/t"),
-        ("lu.f", "ARA", "USD/t"),
+        ("ttf.f",  "TTF", "EUR/MWh"),
+        ("co2e.f", "EUA", "EUR/t"),
+        ("arac.f", "ARA", "USD/t"),
     ];
 
     let mut total = 0usize;

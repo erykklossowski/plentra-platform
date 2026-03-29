@@ -102,15 +102,15 @@ pub async fn fetch_commodity(client: &reqwest::Client, symbol: &str) -> Result<S
 }
 
 pub async fn fetch_ttf(client: &reqwest::Client) -> Result<StooqResult> {
-    fetch_commodity(client, "tg.f").await
+    fetch_commodity(client, "ttf.f").await
 }
 
 pub async fn fetch_eua(client: &reqwest::Client) -> Result<StooqResult> {
-    fetch_commodity(client, "ck.f").await
+    fetch_commodity(client, "co2e.f").await
 }
 
 pub async fn fetch_ara(client: &reqwest::Client) -> Result<StooqResult> {
-    fetch_commodity(client, "lu.f").await
+    fetch_commodity(client, "arac.f").await
 }
 
 pub async fn fetch_eurusd(client: &reqwest::Client) -> Result<f64> {
