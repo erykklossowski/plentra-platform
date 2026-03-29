@@ -175,7 +175,7 @@ export default async function SummaryPage() {
 
       {/* Spread Chart — interactive history with date range selector */}
       <HistoricalChart
-        endpoint="/api/history/spreads?"
+        endpoint="/api/history/spreads"
         title="Clean Spark & Dark Spread History"
         yLabel="EUR/MWh"
         series={[

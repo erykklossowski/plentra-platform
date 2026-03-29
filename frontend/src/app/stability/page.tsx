@@ -143,7 +143,7 @@ export default async function StabilityPage() {
 
       {/* Daily OZE Curtailment Trend */}
       <HistoricalChart
-        endpoint="/api/history/curtailment?"
+        endpoint="/api/history/curtailment"
         title="Daily OZE Curtailment"
         yLabel="MWh"
         series={[

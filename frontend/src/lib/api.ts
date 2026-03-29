@@ -11,7 +11,7 @@ import type {
   ForecastResponse,
 } from "@/types/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080").trim();
 
 async function apiFetch<T>(path: string, revalidate = 900): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {

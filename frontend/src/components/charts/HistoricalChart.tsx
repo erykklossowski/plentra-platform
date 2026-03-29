@@ -44,21 +44,31 @@ export default function HistoricalChart({
   });
   const [data, setData] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+  // Trim whitespace/newlines from env var (Vercel sometimes appends \n)
+  const apiBase = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080").trim();
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     const separator = endpoint.includes("?") ? "&" : "?";
     const url = `${apiBase}${endpoint}${separator}from=${range.from}&to=${range.to}&resolution=daily`;
 
     fetch(url)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((json) => {
         setData(json.points ?? []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => {
+        console.error(`HistoricalChart fetch error: ${err.message}`, url);
+        setError(err.message);
+        setLoading(false);
+      });
   }, [endpoint, range, apiBase]);
 
   return (
@@ -75,6 +85,12 @@ export default function HistoricalChart({
           <span className="material-symbols-outlined text-primary animate-spin">
             refresh
           </span>
+        </div>
+      ) : error ? (
+        <div className="h-48 flex items-center justify-center">
+          <p className="text-sm text-error">
+            Failed to load data: {error}
+          </p>
         </div>
       ) : data.length === 0 ? (
         <div className="h-48 flex items-center justify-center">
