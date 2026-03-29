@@ -1,0 +1,232 @@
+use chrono::{DateTime, Utc};
+use sqlx::PgPool;
+
+/// Write a single fuel price data point (daily close).
+/// Idempotent: duplicate (ts, ticker) rows are silently ignored.
+pub async fn write_fuel_price(
+    pool: &PgPool,
+    ts: DateTime<Utc>,
+    ticker: &str,
+    close: f64,
+    unit: &str,
+    source: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO fuel_daily (ts, ticker, close, unit, source)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(ts)
+    .bind(ticker)
+    .bind(close)
+    .bind(unit)
+    .bind(source)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Write a batch of fuel prices in a single transaction.
+pub async fn write_fuel_prices_batch(
+    pool: &PgPool,
+    rows: &[(DateTime<Utc>, &str, f64, &str, &str)],
+) -> anyhow::Result<usize> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0usize;
+    for (ts, ticker, close, unit, source) in rows {
+        let result = sqlx::query(
+            "INSERT INTO fuel_daily (ts, ticker, close, unit, source)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(ts)
+        .bind(ticker)
+        .bind(close)
+        .bind(unit)
+        .bind(source)
+        .execute(&mut *tx)
+        .await?;
+        count += result.rows_affected() as usize;
+    }
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// Write hourly electricity price.
+pub async fn write_price_hourly(
+    pool: &PgPool,
+    ts: DateTime<Utc>,
+    source: &str,
+    product: &str,
+    value_eur: Option<f64>,
+    value_pln: Option<f64>,
+    is_forecast: bool,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO price_hourly
+         (ts, source, product, value_eur_mwh, value_pln_mwh, is_forecast)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(ts)
+    .bind(source)
+    .bind(product)
+    .bind(value_eur)
+    .bind(value_pln)
+    .bind(is_forecast)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Write 15-min curtailment record.
+pub async fn write_curtailment(
+    pool: &PgPool,
+    ts: DateTime<Utc>,
+    wi_balance: f64,
+    wi_network: f64,
+    pv_balance: f64,
+    pv_network: f64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO curtailment_15min
+         (ts, wi_balance_mw, wi_network_mw, pv_balance_mw, pv_network_mw)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(ts)
+    .bind(wi_balance)
+    .bind(wi_network)
+    .bind(pv_balance)
+    .bind(pv_network)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Write a batch of curtailment records in a single transaction.
+pub async fn write_curtailment_batch(
+    pool: &PgPool,
+    rows: &[(DateTime<Utc>, f64, f64, f64, f64)],
+) -> anyhow::Result<usize> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0usize;
+    for (ts, wib, win, pvb, pvn) in rows {
+        let result = sqlx::query(
+            "INSERT INTO curtailment_15min
+             (ts, wi_balance_mw, wi_network_mw, pv_balance_mw, pv_network_mw)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(ts)
+        .bind(wib)
+        .bind(win)
+        .bind(pvb)
+        .bind(pvn)
+        .execute(&mut *tx)
+        .await?;
+        count += result.rows_affected() as usize;
+    }
+    tx.commit().await?;
+    Ok(count)
+}
+
+/// Write hourly reserve capacity prices.
+#[allow(clippy::too_many_arguments)]
+pub async fn write_reserve_prices(
+    pool: &PgPool,
+    ts: DateTime<Utc>,
+    afrr_d: Option<f64>,
+    afrr_g: Option<f64>,
+    mfrrd_d: Option<f64>,
+    mfrrd_g: Option<f64>,
+    fcr_d: Option<f64>,
+    fcr_g: Option<f64>,
+    rr_g: Option<f64>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO reserve_prices_hourly
+         (ts, afrr_d_pln_mw, afrr_g_pln_mw, mfrrd_d_pln_mw,
+          mfrrd_g_pln_mw, fcr_d_pln_mw, fcr_g_pln_mw, rr_g_pln_mw)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(ts)
+    .bind(afrr_d)
+    .bind(afrr_g)
+    .bind(mfrrd_d)
+    .bind(mfrrd_g)
+    .bind(fcr_d)
+    .bind(fcr_g)
+    .bind(rr_g)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Write hourly generation by source type.
+pub async fn write_generation(
+    pool: &PgPool,
+    ts: DateTime<Utc>,
+    source_type: &str,
+    value_mw: f64,
+    is_forecast: bool,
+    data_source: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO generation_hourly
+         (ts, source_type, value_mw, is_forecast, data_source)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(ts)
+    .bind(source_type)
+    .bind(value_mw)
+    .bind(is_forecast)
+    .bind(data_source)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Timelike;
+
+    #[test]
+    fn test_pse_timestamp_parsing() {
+        let raw = "2024-09-24 00:15:00";
+        let parsed = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S");
+        assert!(parsed.is_ok());
+        let ts = parsed.unwrap().and_utc();
+        assert_eq!(ts.hour(), 0);
+        assert_eq!(ts.minute(), 15);
+    }
+
+    #[test]
+    fn test_pse_timestamp_with_timezone() {
+        use chrono_tz::Europe::Warsaw;
+
+        let raw = "2024-06-15 14:30:00";
+        let ndt = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S").unwrap();
+        let warsaw_dt = ndt.and_local_timezone(Warsaw).single().unwrap();
+        let utc_dt = warsaw_dt.with_timezone(&chrono::Utc);
+        // June = CEST (UTC+2), so 14:30 Warsaw = 12:30 UTC
+        assert_eq!(utc_dt.hour(), 12);
+        assert_eq!(utc_dt.minute(), 30);
+    }
+
+    #[test]
+    fn test_curtailment_mw_to_mwh_conversion() {
+        let mw = 100.0f64;
+        let mwh = mw * 0.25;
+        assert!((mwh - 25.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_backfill_days_cap() {
+        let requested = 9999i64;
+        let capped = requested.min(730);
+        assert_eq!(capped, 730);
+    }
+}

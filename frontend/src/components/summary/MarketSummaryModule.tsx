@@ -29,9 +29,15 @@ export default function MarketSummaryModule({ summary }: Props) {
             </span>
           )}
         </div>
-        <p className="text-sm text-on-surface leading-relaxed font-body">
-          {summary.retrospective_text}
-        </p>
+        {summary.retrospective_text ? (
+          <p className="text-sm text-on-surface leading-relaxed font-body">
+            {summary.retrospective_text}
+          </p>
+        ) : (
+          <p className="text-sm text-on-surface-variant/50 italic">
+            Generating analysis…
+          </p>
+        )}
         <div className="mt-4">
           <SignalChip
             label="Avg System Margin"

@@ -1,5 +1,6 @@
 mod cache;
 mod config;
+mod db;
 mod fetchers;
 mod models;
 mod routes;
@@ -16,6 +17,7 @@ pub struct AppState {
     pub config: config::Config,
     pub cache: cache::Cache,
     pub http_client: reqwest::Client,
+    pub db: Option<sqlx::PgPool>,
 }
 
 #[tokio::main]
@@ -29,6 +31,23 @@ async fn main() {
     let config = config::Config::from_env();
     let port = config.port;
 
+    // Database: optional — app works without it
+    let db = if let Some(ref url) = config.database_url {
+        match db::pool::connect(url).await {
+            Ok(pool) => {
+                tracing::info!("TimescaleDB connected");
+                Some(pool)
+            }
+            Err(e) => {
+                tracing::warn!("DB connection failed, running without persistence: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::info!("DATABASE_URL not set, running without persistence");
+        None
+    };
+
     let state = Arc::new(AppState {
         config,
         cache: cache::Cache::new(),
@@ -37,6 +56,7 @@ async fn main() {
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("failed to build HTTP client"),
+        db,
     });
 
     let cors = CorsLayer::new()
@@ -60,6 +80,7 @@ async fn main() {
         .route("/api/europe", get(routes::europe::handler))
         .route("/api/reserves", get(routes::reserves::handler))
         .route("/api/curtailment", get(routes::curtailment::handler))
+        .route("/admin/backfill", get(routes::admin::handler))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

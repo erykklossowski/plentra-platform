@@ -3,6 +3,7 @@ use std::env;
 #[derive(Clone)]
 pub struct Config {
     pub port: u16,
+    pub database_url: Option<String>,
     pub entsoe_token: Option<String>,
     pub anthropic_api_key: Option<String>,
     pub cache_ttl_fuels: u64,
@@ -17,6 +18,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8080),
+            database_url: env::var("DATABASE_URL").ok(),
             entsoe_token: env::var("ENTSOE_TOKEN").ok(),
             anthropic_api_key: env::var("ANTHROPIC_API_KEY").ok(),
             cache_ttl_fuels: env::var("CACHE_TTL_FUELS")

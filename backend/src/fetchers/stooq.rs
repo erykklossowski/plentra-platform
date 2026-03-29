@@ -118,6 +118,65 @@ pub async fn fetch_eurusd(client: &reqwest::Client) -> Result<f64> {
     Ok(res.current_price)
 }
 
+/// Fetch historical daily CSV from Stooq for backfill.
+/// Returns Vec<(DateTime<Utc>, close)> sorted oldest→newest.
+pub async fn fetch_history_csv(
+    client: &reqwest::Client,
+    symbol: &str,
+    days: u64,
+) -> Result<Vec<(chrono::DateTime<chrono::Utc>, f64)>> {
+    use chrono::{NaiveDate, TimeZone, Utc};
+
+    let end = Utc::now().date_naive();
+    let start = end - chrono::Duration::days(days as i64);
+
+    let url = format!(
+        "https://stooq.com/q/d/l/?s={}&d1={}&d2={}&i=d",
+        symbol,
+        start.format("%Y%m%d"),
+        end.format("%Y%m%d"),
+    );
+
+    tracing::info!("Stooq CSV backfill: fetching {} ({} days)", symbol, days);
+
+    let text = client
+        .get(&url)
+        .send()
+        .await
+        .context(format!("Stooq CSV fetch failed for {symbol}"))?
+        .text()
+        .await
+        .context(format!("Stooq CSV read failed for {symbol}"))?;
+
+    let mut results = Vec::new();
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(text.as_bytes());
+
+    for record in reader.records() {
+        let record = record?;
+        // Stooq CSV columns: Date,Open,High,Low,Close,Volume
+        let date_str = record.get(0).unwrap_or("");
+        let close_str = record.get(4).unwrap_or("");
+
+        if let (Ok(date), Ok(close)) = (
+            NaiveDate::parse_from_str(date_str, "%Y-%m-%d"),
+            close_str.parse::<f64>(),
+        ) {
+            let ts = Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
+            results.push((ts, close));
+        }
+    }
+
+    tracing::info!(
+        "Stooq CSV backfill: parsed {} rows for {}",
+        results.len(),
+        symbol
+    );
+
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

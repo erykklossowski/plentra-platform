@@ -14,13 +14,6 @@ use crate::services::retrospective::{
 };
 use crate::AppState;
 
-const FALLBACK_RETROSPECTIVE: &str =
-    "European energy markets continued to navigate the interplay of gas supply dynamics, \
-     carbon pricing pressure, and renewable generation variability. TTF forward curves \
-     reflect ongoing uncertainty around LNG import flows and seasonal storage draws, \
-     while EUA permit prices maintain upward cost pressure on thermal generators. \
-     Clean spark spreads remain the key signal for gas-to-power economics in Poland, \
-     with coal-fired units still anchoring baseload dispatch at current price levels.";
 
 pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Value>) {
     let mut headers = HeaderMap::new();
@@ -196,27 +189,25 @@ async fn build_retrospective_text(
     state: &Arc<AppState>,
     fuel_opt: &Option<FuelData>,
     spread_opt: &Option<SpreadData>,
-    month_name: &str,
+    _month_name: &str,
 ) -> (String, Option<String>, bool, bool) {
     // Check if we have a cached retrospective that's still fresh
     if let Some(cached) = state.cache.get("retrospective") {
-        let text = cached.data["text"].as_str().unwrap_or(FALLBACK_RETROSPECTIVE).to_string();
+        let text = cached.data["text"].as_str().unwrap_or("").to_string();
         let gen_at = cached.data["generated_at"].as_str().map(|s| s.to_string());
         return (text, gen_at, false, false);
     }
 
-    // No API key → use month-name fallback (not cached)
+    // No API key — return stale cache if available, otherwise empty
     let api_key = match &state.config.anthropic_api_key {
         Some(key) if !key.is_empty() => key.clone(),
         _ => {
-            let fallback = format!(
-                "{month_name} saw continued volatility in European energy markets. \
-                 TTF natural gas prices reflected supply-demand balancing amid varying LNG import levels. \
-                 EUA carbon permits maintained upward pressure on generation costs. \
-                 Clean spark spreads remained positive, supporting gas-fired generation dispatch, \
-                 while clean dark spreads stayed negative, indicating challenging economics for coal-fired units."
-            );
-            return (fallback, None, false, false); // no API key — not a fallback in the caching sense
+            if let Some(stale) = state.cache.get_stale("retrospective") {
+                let text = stale.data["text"].as_str().unwrap_or("").to_string();
+                let gen_at = stale.data["generated_at"].as_str().map(|s| s.to_string());
+                return (text, gen_at, true, false);
+            }
+            return ("".to_string(), None, false, true);
         }
     };
 
@@ -249,8 +240,13 @@ async fn build_retrospective_text(
                 fd
             }
             _ => {
-                tracing::warn!("summary: fuel fetch failed on cold start — using fallback");
-                return (FALLBACK_RETROSPECTIVE.to_string(), None, false, true);
+                tracing::warn!("summary: fuel fetch failed on cold start — no retrospective");
+                if let Some(stale) = state.cache.get_stale("retrospective") {
+                    let text = stale.data["text"].as_str().unwrap_or("").to_string();
+                    let gen_at = stale.data["generated_at"].as_str().map(|s| s.to_string());
+                    return (text, gen_at, true, false);
+                }
+                return ("".to_string(), None, false, true);
             }
         }
     };
@@ -396,14 +392,11 @@ async fn build_retrospective_text(
             tracing::warn!("Claude API error: {e}");
             // Try stale cache
             if let Some(stale) = state.cache.get_stale("retrospective") {
-                let text = stale.data["text"]
-                    .as_str()
-                    .unwrap_or(FALLBACK_RETROSPECTIVE)
-                    .to_string();
+                let text = stale.data["text"].as_str().unwrap_or("").to_string();
                 let gen_at = stale.data["generated_at"].as_str().map(|s| s.to_string());
                 (text, gen_at, true, false)
             } else {
-                (FALLBACK_RETROSPECTIVE.to_string(), None, false, true)
+                ("".to_string(), None, false, true)
             }
         }
     }

@@ -6,6 +6,8 @@ use axum::Json;
 use chrono::Utc;
 use serde_json::{json, Value};
 
+use chrono_tz::Europe::Warsaw;
+
 use crate::fetchers::pse::{
     build_monthly_avg_history, daily_avg_reserve_price, fetch_pse,
     date_days_ago, thirteen_months_ago, today_warsaw, round2,
@@ -50,15 +52,36 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     // Build daily averages for the 30-day window
     let daily_30d = build_daily_avg_history(&daily_30d_records);
 
-    // 13-month history — sample weekly to limit API calls
-    let history_records = fetch_reserves_sampled(
-        &state.http_client,
-        &date_13m_ago,
-        &today,
-    )
-    .await;
-
-    let history_13m = build_monthly_avg_history(&history_records);
+    // 13-month history — prefer DB, fall back to sampled PSE API calls
+    let history_13m = if let Some(pool) = &state.db {
+        match crate::db::reader::get_reserve_prices_monthly(pool, 13).await {
+            Ok(rows) if rows.len() >= 3 => {
+                rows.into_iter()
+                    .map(|r| {
+                        json!({
+                            "month": r.month.format("%Y-%m").to_string(),
+                            "afrr_d": r.afrr_d,
+                            "afrr_g": r.afrr_g,
+                            "mfrrd_d": r.mfrrd_d,
+                            "mfrrd_g": r.mfrrd_g,
+                            "fcr_d": r.fcr_d,
+                            "fcr_g": r.fcr_g,
+                            "rr_g": r.rr_g,
+                        })
+                    })
+                    .collect()
+            }
+            _ => {
+                let history_records =
+                    fetch_reserves_sampled(&state.http_client, &date_13m_ago, &today).await;
+                build_monthly_avg_history(&history_records)
+            }
+        }
+    } else {
+        let history_records =
+            fetch_reserves_sampled(&state.http_client, &date_13m_ago, &today).await;
+        build_monthly_avg_history(&history_records)
+    };
 
     let avg = |f: fn(&ReservePriceRecord) -> Option<f64>| -> f64 {
         daily_avg_reserve_price(&price_records, &today, f)
@@ -84,6 +107,16 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     state
         .cache
         .set("pse_reserves".to_string(), result.clone(), 3600);
+
+    // Background: persist to TimescaleDB
+    if let Some(pool) = state.db.clone() {
+        let records = daily_30d_records.clone();
+        tokio::spawn(async move {
+            if let Err(e) = persist_reserves(&pool, &records).await {
+                tracing::warn!("DB write failed for reserves: {}", e);
+            }
+        });
+    }
 
     (headers, Json(result))
 }
@@ -185,4 +218,38 @@ fn build_daily_avg_history(records: &[ReservePriceRecord]) -> Vec<serde_json::Va
             })
         })
         .collect()
+}
+
+fn parse_pse_dtime_utc(dtime: &str) -> Option<chrono::DateTime<Utc>> {
+    chrono::NaiveDateTime::parse_from_str(dtime, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .and_then(|ndt| ndt.and_local_timezone(Warsaw).single())
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+async fn persist_reserves(
+    pool: &sqlx::PgPool,
+    records: &[ReservePriceRecord],
+) -> anyhow::Result<()> {
+    use crate::db::writer::write_reserve_prices;
+
+    for r in records {
+        if let Some(ts) = parse_pse_dtime_utc(&r.dtime) {
+            write_reserve_prices(
+                pool,
+                ts,
+                r.afrr_d,
+                r.afrr_g,
+                r.mfrrd_d,
+                r.mfrrd_g,
+                r.fcr_d,
+                r.fcr_g,
+                r.rr_g,
+            )
+            .await?;
+        }
+    }
+
+    tracing::debug!("Persisted {} reserve price records to DB", records.len());
+    Ok(())
 }
