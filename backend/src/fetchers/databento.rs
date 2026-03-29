@@ -39,7 +39,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
         dataset: "IFEU.IMPACT",
         symbol: "ECF.FUT",
         unit: "EUR/t",
-        settlement_stat_type: 1,
+        settlement_stat_type: 4, // confirmed: SettlementPrice
         price_min: 5.0,
         price_max: 200.0,
     },
@@ -48,7 +48,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
         dataset: "IFEU.IMPACT",
         symbol: "ATW.FUT",
         unit: "USD/t",
-        settlement_stat_type: 1,
+        settlement_stat_type: 4, // confirmed: SettlementPrice
         price_min: 30.0,
         price_max: 500.0,
     },
