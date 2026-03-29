@@ -70,9 +70,13 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
             // Background: persist to TimescaleDB (non-blocking)
             if let Some(pool) = state.db.clone() {
                 let fuel = fuel_data.clone();
+                let cached_value = value.clone();
                 tokio::spawn(async move {
                     if let Err(e) = persist_fuels(&pool, &fuel).await {
                         tracing::warn!("DB write failed for fuels: {}", e);
+                    }
+                    if let Err(e) = crate::db::writer::write_cached_response(&pool, CACHE_KEY, &cached_value).await {
+                        tracing::warn!("DB cache write failed for fuels: {}", e);
                     }
                 });
             }
@@ -87,16 +91,46 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                     obj.insert("stale".to_string(), Value::Bool(true));
                 }
                 (headers, Json(data))
+            } else if let Some(data) = db_fallback(&state, CACHE_KEY).await {
+                (headers, Json(data))
             } else {
                 (
                     headers,
                     Json(serde_json::json!({
-                        "error": "Failed to fetch fuel data and no cache available",
-                        "timestamp": Utc::now().to_rfc3339()
+                        "data_status": "unavailable",
+                        "message": "Fuel data temporarily unavailable",
+                        "ttf_eur_mwh": 0.0,
+                        "ttf_change_pct": 0.0,
+                        "ttf_history_30d": [],
+                        "ara_usd_tonne": 0.0,
+                        "ara_change_pct": 0.0,
+                        "ara_history_30d": [],
+                        "eua_eur_tonne": 0.0,
+                        "eua_change_pct": 0.0,
+                        "eua_history_30d": [],
+                        "fetched_at": Utc::now().to_rfc3339(),
+                        "stale": true,
                     })),
                 )
             }
         }
+    }
+}
+
+async fn db_fallback(state: &Arc<AppState>, key: &str) -> Option<Value> {
+    if let Some(pool) = &state.db {
+        match crate::db::reader::get_cached_response(pool, key).await {
+            Ok(Some(mut data)) => {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("stale".to_string(), Value::Bool(true));
+                }
+                tracing::info!("Serving {} from DB fallback", key);
+                Some(data)
+            }
+            _ => None,
+        }
+    } else {
+        None
     }
 }
 

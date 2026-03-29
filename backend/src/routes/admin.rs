@@ -217,3 +217,34 @@ async fn backfill_reserves(
 
     Ok(total)
 }
+
+#[derive(Deserialize)]
+pub struct RefreshParams {
+    pub token: String,
+    pub route: Option<String>,
+}
+
+pub async fn refresh_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RefreshParams>,
+) -> impl IntoResponse {
+    let expected = std::env::var("BACKFILL_TOKEN").unwrap_or_else(|_| "change-me".to_string());
+    if params.token != expected {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "invalid token"})),
+        )
+            .into_response();
+    }
+
+    match params.route.as_deref() {
+        Some("all") | None => {
+            state.cache.clear();
+            Json(json!({"status": "cache invalidated", "route": "all"})).into_response()
+        }
+        Some(route) => {
+            state.cache.invalidate(route);
+            Json(json!({"status": "cache invalidated", "route": route})).into_response()
+        }
+    }
+}

@@ -4,6 +4,8 @@ import SectionModule from "@/components/ui/SectionModule";
 import ReservePriceTable from "@/components/reserves/ReservePriceTable";
 import ReserveTrendChart from "@/components/reserves/ReserveTrendChart";
 import ReserveVsSpreadChart from "@/components/reserves/ReserveVsSpreadChart";
+import HistoricalChart from "@/components/charts/HistoricalChart";
+import DataLoadingCard from "@/components/ui/DataLoadingCard";
 
 export const revalidate = 3600;
 
@@ -17,21 +19,12 @@ export default async function ReservesPage() {
   const spreads =
     spreadsResult.status === "fulfilled" ? spreadsResult.value : null;
 
-  if (!reserves) {
+  if (!reserves || reserves.data_status === "unavailable") {
     return (
-      <div className="p-8">
-        <div className="bg-surface-container p-6 rounded-xl text-center">
-          <span className="material-symbols-outlined text-4xl text-error mb-2">
-            error
-          </span>
-          <h2 className="font-headline text-lg font-bold text-on-surface">
-            Unable to load reserves data
-          </h2>
-          <p className="text-sm text-on-surface-variant mt-2">
-            PSE CMBP-TP API may be unavailable. Please try refreshing.
-          </p>
-        </div>
-      </div>
+      <DataLoadingCard
+        section="Reserves"
+        message={reserves?.message ?? "Fetching from live sources — reload in 30s"}
+      />
     );
   }
 
@@ -85,6 +78,18 @@ export default async function ReservesPage() {
           />
         </SectionModule>
       )}
+
+      {/* aFRR_G Historical Trend */}
+      <HistoricalChart
+        endpoint="/api/history/reserves?product=afrr_g"
+        title="aFRR_G Capacity Price"
+        yLabel="PLN/MW"
+        series={[
+          { key: "avg", label: "aFRR_G avg", color: "#76d6d5" },
+          { key: "max", label: "aFRR_G max", color: "#76d6d5", isDashed: true },
+        ]}
+        defaultDays={365}
+      />
 
       {/* Source attribution */}
       <p className="text-[10px] text-on-surface-variant/60 text-center">

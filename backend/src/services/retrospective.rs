@@ -123,6 +123,129 @@ pub async fn generate_retrospective(
     Ok(text)
 }
 
+/// Build the Model Insights prompt from weekly signals.
+/// Called only when signals.has_signals == true.
+pub fn build_insights_prompt(
+    input: &RetrospectiveInput,
+    signals: &crate::analytics::signal_aggregator::WeeklySignals,
+) -> String {
+    let mut signal_context = String::new();
+
+    if let Some(ref anom) = signals.residual_anomaly {
+        signal_context.push_str(&format!(
+            "\n- PRICE ANOMALY: {} is {:.1} standard deviations {} its \
+             expected seasonal level this week ({}). This suggests a \
+             fundamental driver not captured by seasonal patterns.",
+            anom.ticker,
+            anom.current_zscore.abs(),
+            anom.direction,
+            anom.magnitude,
+        ));
+    }
+
+    if let Some(ref brk) = signals.structural_break {
+        signal_context.push_str(&format!(
+            "\n- REGIME CHANGE: A statistical break in {} pricing was \
+             detected {} days ago ({}). Historical price relationships \
+             established before this date may no longer be reliable.",
+            brk.ticker, brk.days_ago, brk.detected_date,
+        ));
+    }
+
+    if let Some(ref miss) = signals.forecast_miss {
+        signal_context.push_str(&format!(
+            "\n- FORECAST DEVIATION: {} last week was {:.2} EUR/MWh \
+             vs a model forecast of {:.2} EUR/MWh ({:+.1}% error). \
+             The deviation suggests an unmodelled shock in the market.",
+            miss.ticker, miss.actual_value, miss.forecast_value, miss.error_pct,
+        ));
+    }
+
+    if let Some(ref dtw) = signals.dtw_analogs {
+        let analog_desc = dtw
+            .closest_weeks
+            .iter()
+            .map(|a| format!("week of {} ({:+.1}% outcome)", a.week_start, a.outcome_return))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        signal_context.push_str(&format!(
+            "\n- HISTORICAL ANALOG: The current market profile most \
+             closely resembles: {}. Historical consensus points {} \
+             ({:.0}% of analogs agree).",
+            analog_desc,
+            dtw.consensus_direction,
+            dtw.confidence * 100.0,
+        ));
+    }
+
+    format!(
+        r#"You are a senior energy market analyst at Plentra Research, \
+a Polish boutique energy analytics firm. Your quantitative models have \
+flagged the following signals for the current week in the Polish \
+wholesale electricity market:
+{signal_context}
+
+Current market context:
+- RDN spot: {rdn:.1} PLN/MWh
+- TTF gas: {ttf:.2} EUR/MWh
+- EUA CO2: {eua:.2} EUR/t
+- Clean Spark Spread: {css:+.2} EUR/MWh
+- Clean Dark Spread: {cds:+.2} EUR/MWh
+
+Write a concise analytical interpretation (80-120 words) of these \
+model signals for an energy trader. Requirements:
+- Do NOT name the statistical methods — describe findings in plain language
+- Do NOT repeat the raw numbers already visible on the dashboard
+- Focus on what the signals imply for trading decisions this week
+- If signals conflict, acknowledge the ambiguity
+- One sentence maximum on forward implications
+- Plain prose only, no bullet points, no markdown"#,
+        signal_context = signal_context,
+        rdn = input.rdn_pln_mwh,
+        ttf = input.ttf_eur_mwh,
+        eua = input.eua_eur_tonne,
+        css = input.css_spot,
+        cds = input.cds_spot_eta42,
+    )
+}
+
+/// Generate model insights via Claude API.
+/// Returns None if no signals or API call fails — never panics.
+pub async fn generate_model_insights(
+    client: &reqwest::Client,
+    api_key: &str,
+    input: &RetrospectiveInput,
+    signals: &crate::analytics::signal_aggregator::WeeklySignals,
+) -> Option<String> {
+    if !signals.has_signals {
+        return None;
+    }
+
+    let prompt = build_insights_prompt(input, signals);
+
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&json!({
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 200,
+            "messages": [{ "role": "user", "content": prompt }]
+        }))
+        .send()
+        .await
+        .ok()?
+        .json::<serde_json::Value>()
+        .await
+        .ok()?;
+
+    response["content"][0]["text"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

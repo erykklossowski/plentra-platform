@@ -135,6 +135,100 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     let (retrospective_text, retrospective_generated_at, retrospective_stale, retro_is_fallback) =
         build_retrospective_text(&state, &fuel, &spread, &month_name).await;
 
+    // ─── Augurs Analytics Pipeline ───
+    let ttf_history = if let Some(pool) = &state.db {
+        crate::db::reader::get_fuel_sparkline(pool, "TTF", 90)
+            .await
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+    let eua_history = if let Some(pool) = &state.db {
+        crate::db::reader::get_fuel_sparkline(pool, "EUA", 90)
+            .await
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let ttf_decomp = if ttf_history.len() >= 14 {
+        crate::analytics::decomposition::decompose_daily(&ttf_history).ok()
+    } else {
+        None
+    };
+
+    let eua_cp = if eua_history.len() >= 30 {
+        let dates: Vec<chrono::NaiveDate> = (0..eua_history.len())
+            .map(|i| {
+                Utc::now().date_naive()
+                    - chrono::Duration::days((eua_history.len() - 1 - i) as i64)
+            })
+            .collect();
+        crate::analytics::changepoint::detect_changepoints(&eua_history, &dates).ok()
+    } else {
+        None
+    };
+
+    let ttf_forecast = if ttf_history.len() >= 30 {
+        crate::analytics::forecast::forecast_fuel_ets("TTF", &ttf_history, 7).ok()
+    } else {
+        None
+    };
+
+    let signals = crate::analytics::signal_aggregator::aggregate_signals(
+        ttf_decomp.as_ref(),
+        eua_cp.as_ref(),
+        ttf_forecast.as_ref(),
+        &ttf_history,
+        None, // DTW analogs require ≥4 weeks of history — skipped until data accumulates
+    );
+
+    // Generate model insights (only if signals present and API key available)
+    let model_insights = if signals.has_signals {
+        if let Some(ref key) = state.config.anthropic_api_key {
+            if !key.is_empty() {
+                // Build a RetrospectiveInput for the insights prompt
+                let insight_input = RetrospectiveInput {
+                    rdn_pln_mwh: fuel.as_ref().map(|f| f.ttf_eur_mwh * 4.3 * 1.12).unwrap_or(0.0),
+                    rdn_change_pct: fuel.as_ref().map(|f| f.ttf_change_pct).unwrap_or(0.0),
+                    ttf_eur_mwh: fuel.as_ref().map(|f| f.ttf_eur_mwh).unwrap_or(0.0),
+                    ttf_change_pct: fuel.as_ref().map(|f| f.ttf_change_pct).unwrap_or(0.0),
+                    ara_usd_tonne: fuel.as_ref().map(|f| f.ara_usd_tonne).unwrap_or(0.0),
+                    ara_change_pct: fuel.as_ref().map(|f| f.ara_change_pct).unwrap_or(0.0),
+                    eua_eur_tonne: fuel.as_ref().map(|f| f.eua_eur_tonne).unwrap_or(0.0),
+                    eua_change_pct: fuel.as_ref().map(|f| f.eua_change_pct).unwrap_or(0.0),
+                    css_spot: spread.as_ref().map(|s| s.css_spot).unwrap_or(0.0),
+                    cds_spot_eta42: spread.as_ref().map(|s| s.cds_spot_eta42).unwrap_or(0.0),
+                    dispatch_signal: spread.as_ref().map(|s| s.dispatch_signal.clone()).unwrap_or_default(),
+                    current_residual_gw: 0.0,
+                    must_run_floor_gw: 0.0,
+                    cri_value: 0.0,
+                    cri_level: "UNKNOWN".to_string(),
+                    ytd_total_gwh: 0.0,
+                    ytd_wind_gwh: 0.0,
+                    ytd_solar_gwh: 0.0,
+                    ytd_network_gwh: 0.0,
+                    ytd_balance_gwh: 0.0,
+                    afrr_g_pln_mw: 0.0,
+                    mfrrd_g_pln_mw: 0.0,
+                };
+                crate::services::retrospective::generate_model_insights(
+                    &state.http_client,
+                    key,
+                    &insight_input,
+                    &signals,
+                )
+                .await
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let summary = json!({
         "retrospective_text": retrospective_text,
         "retrospective_generated_at": retrospective_generated_at,
@@ -170,6 +264,10 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         "key_indicators": key_indicators,
         "industrial_spread": industrial_spread,
         "forward_prices": forward_prices,
+        "model_insights": model_insights,
+        "model_insights_generated_at": if model_insights.is_some() { Some(Utc::now().to_rfc3339()) } else { None },
+        "signal_count": signals.signal_count,
+        "signals_summary": signals.signals_summary,
         "fetched_at": now.to_rfc3339()
     });
 

@@ -32,8 +32,15 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
             return (
                 headers,
                 Json(serde_json::json!({
-                    "error": "ENTSO-E API not configured",
-                    "timestamp": Utc::now().to_rfc3339()
+                    "data_status": "unavailable",
+                    "message": "Cross-border data temporarily unavailable",
+                    "pl_da_eur_mwh": 0.0,
+                    "de_da_eur_mwh": 0.0,
+                    "spread_eur_mwh": 0.0,
+                    "spread_direction": "UNKNOWN",
+                    "hourly_profile": [],
+                    "fetched_at": Utc::now().to_rfc3339(),
+                    "stale": true,
                 })),
             );
         }
@@ -120,8 +127,15 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 (
                     headers,
                     Json(serde_json::json!({
-                        "error": "Failed to fetch cross-border DA prices",
-                        "timestamp": Utc::now().to_rfc3339()
+                        "data_status": "unavailable",
+                        "message": "Cross-border data temporarily unavailable",
+                        "pl_da_eur_mwh": 0.0,
+                        "de_da_eur_mwh": 0.0,
+                        "spread_eur_mwh": 0.0,
+                        "spread_direction": "UNKNOWN",
+                        "hourly_profile": [],
+                        "fetched_at": Utc::now().to_rfc3339(),
+                        "stale": true,
                     })),
                 )
             }

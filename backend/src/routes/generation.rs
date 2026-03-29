@@ -146,8 +146,18 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
             return (
                 headers,
                 Json(serde_json::json!({
-                    "error": "Fuel data not available",
-                    "timestamp": Utc::now().to_rfc3339()
+                    "data_status": "unavailable",
+                    "message": "Generation data temporarily unavailable",
+                    "jkz_table": [],
+                    "dispatch_signal": "UNKNOWN",
+                    "css_spot": null,
+                    "cds_spot_eta42": null,
+                    "css_history_30d": [],
+                    "cds_history_30d": [],
+                    "eur_usd_rate": 0.0,
+                    "rdn_eur_mwh": 0.0,
+                    "fetched_at": Utc::now().to_rfc3339(),
+                    "stale": true,
                 })),
             );
         }

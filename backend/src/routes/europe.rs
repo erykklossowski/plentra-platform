@@ -31,8 +31,14 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
             return (
                 headers,
                 Json(serde_json::json!({
-                    "error": "ENTSO-E API not configured",
-                    "timestamp": Utc::now().to_rfc3339()
+                    "data_status": "unavailable",
+                    "message": "European price data temporarily unavailable",
+                    "rankings": [],
+                    "poland_rank": 0,
+                    "poland_price": 0.0,
+                    "eu_average": 0.0,
+                    "fetched_at": Utc::now().to_rfc3339(),
+                    "stale": true,
                 })),
             );
         }
@@ -65,8 +71,14 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         return (
             headers,
             Json(serde_json::json!({
-                "error": "No European DA price data available",
-                "timestamp": Utc::now().to_rfc3339()
+                "data_status": "unavailable",
+                "message": "European price data temporarily unavailable",
+                "rankings": [],
+                "poland_rank": 0,
+                "poland_price": 0.0,
+                "eu_average": 0.0,
+                "fetched_at": Utc::now().to_rfc3339(),
+                "stale": true,
             })),
         );
     }

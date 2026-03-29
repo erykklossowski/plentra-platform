@@ -1,5 +1,6 @@
 import { getCrossBorder } from "@/lib/api";
 import SpreadProfileChart from "@/components/crossborder/SpreadProfileChart";
+import DataLoadingCard from "@/components/ui/DataLoadingCard";
 
 export const revalidate = 3600;
 
@@ -7,21 +8,12 @@ export default async function CrossBorderPage() {
   const [result] = await Promise.allSettled([getCrossBorder()]);
   const data = result.status === "fulfilled" ? result.value : null;
 
-  if (!data) {
+  if (!data || data.data_status === "unavailable") {
     return (
-      <div className="p-8">
-        <div className="bg-surface-container p-6 rounded-xl text-center">
-          <span className="material-symbols-outlined text-4xl text-error mb-2">
-            error
-          </span>
-          <h2 className="font-headline text-lg font-bold text-on-surface">
-            Unable to load cross-border data
-          </h2>
-          <p className="text-sm text-on-surface-variant mt-2">
-            Please ensure ENTSO-E API is configured and try refreshing.
-          </p>
-        </div>
-      </div>
+      <DataLoadingCard
+        section="Cross-Border"
+        message={data?.message ?? "Fetching from live sources — reload in 30s"}
+      />
     );
   }
 

@@ -53,4 +53,12 @@ impl Cache {
             },
         );
     }
+
+    pub fn invalidate(&self, key: &str) {
+        self.store.remove(key);
+    }
+
+    pub fn clear(&self) {
+        self.store.clear();
+    }
 }

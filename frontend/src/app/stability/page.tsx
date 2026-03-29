@@ -8,6 +8,8 @@ import ScatterPlot from "@/components/charts/ScatterPlot";
 import ResidualDemandChart from "@/components/stability/ResidualDemandChart";
 import CurtailmentSummary from "@/components/stability/CurtailmentSummary";
 import CurtailmentByCause from "@/components/stability/CurtailmentByCause";
+import HistoricalChart from "@/components/charts/HistoricalChart";
+import DataLoadingCard from "@/components/ui/DataLoadingCard";
 
 export const revalidate = 3600;
 
@@ -19,21 +21,12 @@ export default async function StabilityPage() {
   const residual = residualResult.status === "fulfilled" ? residualResult.value : null;
   const curtailment = curtailmentResult.status === "fulfilled" ? curtailmentResult.value : null;
 
-  if (!residual) {
+  if (!residual || residual.data_status === "unavailable") {
     return (
-      <div className="p-8">
-        <div className="bg-surface-container p-6 rounded-xl text-center">
-          <span className="material-symbols-outlined text-4xl text-error mb-2">
-            error
-          </span>
-          <h2 className="font-headline text-lg font-bold text-on-surface">
-            Unable to load stability data
-          </h2>
-          <p className="text-sm text-on-surface-variant mt-2">
-            Please ensure the ENTSO-E API is configured and try refreshing.
-          </p>
-        </div>
-      </div>
+      <DataLoadingCard
+        section="Stability"
+        message={residual?.message ?? "Fetching from live sources — reload in 30s"}
+      />
     );
   }
 
@@ -147,6 +140,20 @@ export default async function StabilityPage() {
       {curtailment && curtailment.hourly_profile.length > 0 && (
         <CurtailmentByCause hourlyProfile={curtailment.hourly_profile} />
       )}
+
+      {/* Daily OZE Curtailment Trend */}
+      <HistoricalChart
+        endpoint="/api/history/curtailment?"
+        title="Daily OZE Curtailment"
+        yLabel="MWh"
+        series={[
+          { key: "wi_balance_mwh", label: "Wind Balance", color: "#76d6d5" },
+          { key: "wi_network_mwh", label: "Wind Network", color: "#ffb4ab" },
+          { key: "pv_balance_mwh", label: "Solar Balance", color: "#ffb692" },
+          { key: "pv_network_mwh", label: "Solar Network", color: "#f59e0b" },
+        ]}
+        defaultDays={30}
+      />
     </div>
   );
 }

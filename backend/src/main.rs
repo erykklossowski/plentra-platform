@@ -1,3 +1,4 @@
+mod analytics;
 mod cache;
 mod config;
 mod db;
@@ -8,7 +9,7 @@ mod services;
 
 use std::sync::Arc;
 
-use axum::{http::HeaderValue, routing::get, Router};
+use axum::{http::HeaderValue, routing::{get, post}, Router};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
@@ -65,7 +66,7 @@ async fn main() {
             HeaderValue::from_static("https://frontend-gamma-pink-76.vercel.app"),
             HeaderValue::from_static("https://plentra.vercel.app"),
         ]))
-        .allow_methods([axum::http::Method::GET, axum::http::Method::OPTIONS])
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::OPTIONS])
         .allow_headers(tower_http::cors::Any);
 
     let app = Router::new()
@@ -80,7 +81,14 @@ async fn main() {
         .route("/api/europe", get(routes::europe::handler))
         .route("/api/reserves", get(routes::reserves::handler))
         .route("/api/curtailment", get(routes::curtailment::handler))
+        .route("/api/forecast", get(routes::forecast::handler))
+        .route("/api/history/fuels", get(routes::history::fuels_handler))
+        .route("/api/history/spreads", get(routes::history::spreads_handler))
+        .route("/api/history/curtailment", get(routes::history::curtailment_handler))
+        .route("/api/history/reserves", get(routes::history::reserves_handler))
+        .route("/api/history/prices", get(routes::history::prices_handler))
         .route("/admin/backfill", get(routes::admin::handler))
+        .route("/admin/refresh", post(routes::admin::refresh_handler))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

@@ -1,4 +1,10 @@
-export interface FuelsResponse {
+// Common fields returned by all routes when data is unavailable
+export interface DataStatusFields {
+  data_status?: "unavailable";
+  message?: string;
+}
+
+export interface FuelsResponse extends DataStatusFields {
   ttf_eur_mwh: number;
   ttf_change_pct: number;
   ttf_history_30d: number[];
@@ -18,7 +24,7 @@ export interface SpreadHistoryEntry {
   cds_42: number;
 }
 
-export interface SpreadsResponse {
+export interface SpreadsResponse extends DataStatusFields {
   css_spot: number;
   css_spot_pct_change: number;
   cds_spot_eta34: number;
@@ -73,7 +79,7 @@ export interface ForwardPrice {
   available: boolean;
 }
 
-export interface SummaryResponse {
+export interface SummaryResponse extends DataStatusFields {
   retrospective_text: string;
   retrospective_generated_at?: string;
   retrospective_stale?: boolean;
@@ -83,6 +89,10 @@ export interface SummaryResponse {
   key_indicators: KeyIndicator[];
   industrial_spread: IndustrialSpread;
   forward_prices: ForwardPrice[];
+  model_insights?: string | null;
+  model_insights_generated_at?: string | null;
+  signal_count?: number;
+  signals_summary?: string[];
   fetched_at: string;
 }
 
@@ -111,7 +121,7 @@ export interface JKZEntry {
   dispatch_status: string;
 }
 
-export interface GenerationResponse {
+export interface GenerationResponse extends DataStatusFields {
   jkz_table: JKZEntry[];
   dispatch_signal: string;
   css_spot: number;
@@ -133,7 +143,7 @@ export interface CrossBorderHourly {
   spread: number;
 }
 
-export interface CrossBorderResponse {
+export interface CrossBorderResponse extends DataStatusFields {
   pl_da_eur_mwh: number;
   de_da_eur_mwh: number;
   spread_eur_mwh: number;
@@ -162,7 +172,7 @@ export interface ExtremePriceEntry {
   price: number;
 }
 
-export interface EuropeResponse {
+export interface EuropeResponse extends DataStatusFields {
   rankings: EURankingEntry[];
   poland_rank: number;
   poland_price: number;
@@ -193,7 +203,7 @@ export interface CurtailmentDaily {
   total_mwh: number;
 }
 
-export interface CurtailmentResponse {
+export interface CurtailmentResponse extends DataStatusFields {
   today_total_mwh: number;
   today_wind_balance_mwh: number;
   today_wind_network_mwh: number;
@@ -242,7 +252,7 @@ export interface ReserveDailyHistory {
   fcr_g: number;
 }
 
-export interface ReservesResponse {
+export interface ReservesResponse extends DataStatusFields {
   date: string;
   prices: ReservePrices;
   daily_30d: ReserveDailyHistory[];
@@ -253,7 +263,7 @@ export interface ReservesResponse {
 
 // ─── Stability (Phase 2) ───
 
-export interface ResidualResponse {
+export interface ResidualResponse extends DataStatusFields {
   current_residual_gw: number;
   must_run_floor_gw: number;
   stability_margin_gw: number;
@@ -271,5 +281,52 @@ export interface ResidualResponse {
   correlation_p: number;
   is_estimate: boolean;
   fetched_at: string;
+  stale?: boolean;
+}
+
+// ─── Forecast (Phase 7) ───
+
+export interface FuelForecastData {
+  ticker: string;
+  horizon_days: number;
+  last_historical: number;
+  training_points: number;
+  point_forecast: number[];
+  lower_80: number[];
+  upper_80: number[];
+  lower_95: number[];
+  upper_95: number[];
+}
+
+export interface DecompositionData {
+  ticker: string;
+  series_len: number;
+  trend: number[];
+  seasonal_7d: number[];
+  residual: number[];
+}
+
+export interface ChangepointAlert {
+  ticker: string;
+  alert: boolean;
+  message: string;
+  latest_break_index?: number;
+}
+
+export interface ForecastResponse extends DataStatusFields {
+  generated_at?: string;
+  fuel_forecasts?: {
+    ttf?: FuelForecastData;
+    ara?: FuelForecastData;
+    eua?: FuelForecastData;
+  };
+  decomposition?: DecompositionData;
+  changepoint_alerts?: ChangepointAlert;
+  methodology?: {
+    fuel_model: string;
+    decomposition: string;
+    changepoint: string;
+    note: string;
+  };
   stale?: boolean;
 }

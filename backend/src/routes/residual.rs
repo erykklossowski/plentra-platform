@@ -42,8 +42,17 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
             return (
                 headers,
                 Json(serde_json::json!({
-                    "error": "ENTSO-E API not configured. Set ENTSOE_TOKEN environment variable.",
-                    "timestamp": Utc::now().to_rfc3339()
+                    "data_status": "unavailable",
+                    "message": "Residual demand data temporarily unavailable",
+                    "current_residual_gw": 0.0,
+                    "must_run_floor_gw": 0.0,
+                    "stability_margin_gw": 0.0,
+                    "cri_value": 0.0,
+                    "cri_level": "UNKNOWN",
+                    "hourly_profile": [],
+                    "heatmap_data": [],
+                    "fetched_at": Utc::now().to_rfc3339(),
+                    "stale": true,
                 })),
             );
         }
@@ -155,8 +164,17 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 (
                     headers,
                     Json(serde_json::json!({
-                        "error": "Failed to fetch ENTSO-E data and no cache available",
-                        "timestamp": Utc::now().to_rfc3339()
+                        "data_status": "unavailable",
+                        "message": "Residual demand data temporarily unavailable",
+                        "current_residual_gw": 0.0,
+                        "must_run_floor_gw": 0.0,
+                        "stability_margin_gw": 0.0,
+                        "cri_value": 0.0,
+                        "cri_level": "UNKNOWN",
+                        "hourly_profile": [],
+                        "heatmap_data": [],
+                        "fetched_at": Utc::now().to_rfc3339(),
+                        "stale": true,
                     })),
                 )
             }

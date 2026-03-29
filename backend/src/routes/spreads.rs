@@ -88,13 +88,27 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 value
             }
             _ => {
-                return (
-                    headers,
-                    Json(serde_json::json!({
-                        "error": "Failed to fetch fuel data for spread calculation",
-                        "timestamp": Utc::now().to_rfc3339()
-                    })),
-                );
+                // Fuel fetch failed — try stale fuel cache, then DB fallback for spreads
+                if let Some(stale) = state.cache.get_stale("fuels") {
+                    stale.data
+                } else if let Some(data) = db_fallback(&state, CACHE_KEY).await {
+                    return (headers, Json(data));
+                } else {
+                    return (
+                        headers,
+                        Json(serde_json::json!({
+                            "data_status": "unavailable",
+                            "message": "Spread data temporarily unavailable",
+                            "css_spot": null,
+                            "cds_spot_eta42": null,
+                            "cds_spot_eta34": null,
+                            "dispatch_signal": "UNKNOWN",
+                            "history_30d": [],
+                            "fetched_at": Utc::now().to_rfc3339(),
+                            "stale": true,
+                        })),
+                    );
+                }
             }
         }
     };
@@ -156,7 +170,34 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         .cache
         .set(CACHE_KEY.to_string(), value.clone(), state.config.cache_ttl_fuels);
 
+    // Persist to DB for future fallback
+    if let Some(pool) = state.db.clone() {
+        let cached_value = value.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::db::writer::write_cached_response(&pool, CACHE_KEY, &cached_value).await {
+                tracing::warn!("DB cache write failed for spreads: {}", e);
+            }
+        });
+    }
+
     (headers, Json(value))
+}
+
+async fn db_fallback(state: &Arc<AppState>, key: &str) -> Option<serde_json::Value> {
+    if let Some(pool) = &state.db {
+        match crate::db::reader::get_cached_response(pool, key).await {
+            Ok(Some(mut data)) => {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("stale".to_string(), serde_json::Value::Bool(true));
+                }
+                tracing::info!("Serving {} from DB fallback", key);
+                Some(data)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

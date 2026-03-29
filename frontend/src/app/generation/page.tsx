@@ -2,6 +2,8 @@ import { getGeneration, getSpreads } from "@/lib/api";
 import DispatchSignalBadge from "@/components/generation/DispatchSignalBadge";
 import JKZTable from "@/components/generation/JKZTable";
 import SpreadChart from "@/components/charts/SpreadChart";
+import HistoricalChart from "@/components/charts/HistoricalChart";
+import DataLoadingCard from "@/components/ui/DataLoadingCard";
 
 export const revalidate = 300;
 
@@ -14,21 +16,12 @@ export default async function GenerationPage() {
   const gen = genResult.status === "fulfilled" ? genResult.value : null;
   const spreads = spreadResult.status === "fulfilled" ? spreadResult.value : null;
 
-  if (!gen) {
+  if (!gen || gen.data_status === "unavailable") {
     return (
-      <div className="p-8">
-        <div className="bg-surface-container p-6 rounded-xl text-center">
-          <span className="material-symbols-outlined text-4xl text-error mb-2">
-            error
-          </span>
-          <h2 className="font-headline text-lg font-bold text-on-surface">
-            Unable to load generation data
-          </h2>
-          <p className="text-sm text-on-surface-variant mt-2">
-            Please ensure fuel data is available and try refreshing.
-          </p>
-        </div>
-      </div>
+      <DataLoadingCard
+        section="Generation"
+        message={gen?.message ?? "Fetching from live sources — reload in 30s"}
+      />
     );
   }
 
@@ -118,6 +111,15 @@ export default async function GenerationPage() {
           <SpreadChart data={spreads.history_30d} />
         </div>
       )}
+
+      {/* TTF Fuel Price History */}
+      <HistoricalChart
+        endpoint="/api/history/fuels?ticker=TTF"
+        title="Natural Gas (TTF)"
+        yLabel="EUR/MWh"
+        series={[{ key: "avg", label: "TTF Close", color: "#76d6d5" }]}
+        defaultDays={90}
+      />
     </div>
   );
 }

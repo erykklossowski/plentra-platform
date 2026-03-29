@@ -8,19 +8,17 @@ import type {
   EuropeResponse,
   CurtailmentResponse,
   ReservesResponse,
+  ForecastResponse,
 } from "@/types/api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
-async function apiFetch<T>(path: string): Promise<T> {
+async function apiFetch<T>(path: string, revalidate = 900): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    next: { revalidate: 900 },
+    next: { revalidate },
   });
   if (!res.ok) throw new Error(`API error: ${res.status} ${path}`);
-  const data = await res.json();
-  if (data.error) throw new Error(`API error: ${data.error}`);
-  if (data.status === "not_implemented") throw new Error(`API not implemented: ${path}`);
-  return data as T;
+  return (await res.json()) as T;
 }
 
 export const getSummary = () => apiFetch<SummaryResponse>("/api/summary");
@@ -32,3 +30,4 @@ export const getCrossBorder = () => apiFetch<CrossBorderResponse>("/api/crossbor
 export const getEurope = () => apiFetch<EuropeResponse>("/api/europe");
 export const getCurtailment = () => apiFetch<CurtailmentResponse>("/api/curtailment");
 export const getReserves = () => apiFetch<ReservesResponse>("/api/reserves");
+export const getForecast = () => apiFetch<ForecastResponse>("/api/forecast", 3600);

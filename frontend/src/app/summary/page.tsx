@@ -6,6 +6,8 @@ import MarketSummaryModule from "@/components/summary/MarketSummaryModule";
 import KeyIndicatorsTable from "@/components/summary/KeyIndicatorsTable";
 import IndustrialSpreadMonitor from "@/components/summary/IndustrialSpreadMonitor";
 import SpreadChart from "@/components/charts/SpreadChart";
+import HistoricalChart from "@/components/charts/HistoricalChart";
+import DataLoadingCard from "@/components/ui/DataLoadingCard";
 import type { SummaryResponse, FuelsResponse, SpreadsResponse, ForwardPrice } from "@/types/api";
 
 export const revalidate = 900;
@@ -21,21 +23,12 @@ export default async function SummaryPage() {
   const fuels = fuelsResult.status === "fulfilled" ? fuelsResult.value : null;
   const spreads = spreadsResult.status === "fulfilled" ? spreadsResult.value : null;
 
-  if (!summary) {
+  if (!summary || summary.data_status === "unavailable") {
     return (
-      <div className="p-8">
-        <div className="bg-surface-container p-6 rounded-xl text-center">
-          <span className="material-symbols-outlined text-4xl text-error mb-2">
-            error
-          </span>
-          <h2 className="font-headline text-lg font-bold text-on-surface">
-            Unable to load market data
-          </h2>
-          <p className="text-sm text-on-surface-variant mt-2">
-            Please ensure the backend is running and try refreshing the page.
-          </p>
-        </div>
-      </div>
+      <DataLoadingCard
+        section="Summary"
+        message={summary?.message ?? "Fetching from live sources — reload in 30s"}
+      />
     );
   }
 
@@ -180,15 +173,23 @@ export default async function SummaryPage() {
         <KeyIndicatorsTable indicators={summary.key_indicators} />
       )}
 
-      {/* Spread Chart */}
-      {spreads && spreads.history_30d.length > 0 && (
-        <div className="bg-surface-container p-6 rounded-xl">
-          <h2 className="font-headline text-lg font-bold text-on-surface mb-4">
-            Clean Spark & Dark Spread History (30d)
-          </h2>
-          <SpreadChart data={spreads.history_30d} />
-        </div>
-      )}
+      {/* Spread Chart — interactive history with date range selector */}
+      <HistoricalChart
+        endpoint="/api/history/spreads?"
+        title="Clean Spark & Dark Spread History"
+        yLabel="EUR/MWh"
+        series={[
+          { key: "css", label: "CSS (Gas η=60%)", color: "#76d6d5" },
+          {
+            key: "cds_42",
+            label: "CDS (Coal η=42%)",
+            color: "#ffb692",
+            isDashed: true,
+          },
+        ]}
+        showZeroLine
+        defaultDays={30}
+      />
 
       {/* Industrial Spread Monitor */}
       {summary.industrial_spread.baseload_eur_mwh !== undefined && (
