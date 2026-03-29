@@ -49,6 +49,7 @@ pub async fn fetch_commodity(client: &reqwest::Client, symbol: &str) -> Result<S
 
     let response = client
         .get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
         .send()
         .await
         .context(format!("Failed to fetch {symbol} from Stooq"))?;
@@ -137,16 +138,25 @@ pub async fn fetch_history_csv(
         end.format("%Y%m%d"),
     );
 
-    tracing::info!("Stooq CSV backfill: fetching {} ({} days)", symbol, days);
+    tracing::info!("Stooq CSV backfill: fetching {} ({} days), url={}", symbol, days, &url);
 
-    let text = client
+    let resp = client
         .get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
         .send()
         .await
-        .context(format!("Stooq CSV fetch failed for {symbol}"))?
+        .context(format!("Stooq CSV fetch failed for {symbol}"))?;
+
+    let status = resp.status();
+    let text = resp
         .text()
         .await
         .context(format!("Stooq CSV read failed for {symbol}"))?;
+
+    tracing::info!(
+        "Stooq CSV response for {}: status={}, len={}, head='{}'",
+        symbol, status, text.len(), &text[..text.len().min(300)]
+    );
 
     let mut results = Vec::new();
     let mut reader = csv::ReaderBuilder::new()
