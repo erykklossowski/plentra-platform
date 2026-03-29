@@ -195,3 +195,17 @@ pub async fn get_latest_ts(
         .await?;
     Ok(ts.0)
 }
+
+/// Read a cached API response from the persistent api_cache table.
+pub async fn get_cached_response(
+    pool: &PgPool,
+    key: &str,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let row: Option<(serde_json::Value,)> = sqlx::query_as(
+        "SELECT data FROM api_cache WHERE key = $1",
+    )
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(data,)| data))
+}

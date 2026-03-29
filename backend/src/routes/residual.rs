@@ -36,6 +36,9 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     let token = match &state.config.entsoe_token {
         Some(t) if !t.is_empty() => t.clone(),
         _ => {
+            if let Some(data) = db_fallback(&state, CACHE_KEY).await {
+                return (headers, Json(data));
+            }
             return (
                 headers,
                 Json(serde_json::json!({
@@ -133,15 +136,20 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 state.config.cache_ttl_entsoe,
             );
 
+            // Persist to DB for future fallback
+            persist_to_db(&state, CACHE_KEY, &value);
+
             (headers, Json(value))
         }
         _ => {
-            // Fetch failed — try stale cache
+            // Fetch failed — try stale cache, then DB fallback
             if let Some(stale) = state.cache.get_stale(CACHE_KEY) {
                 let mut data = stale.data;
                 if let Some(obj) = data.as_object_mut() {
                     obj.insert("stale".to_string(), Value::Bool(true));
                 }
+                (headers, Json(data))
+            } else if let Some(data) = db_fallback(&state, CACHE_KEY).await {
                 (headers, Json(data))
             } else {
                 (
@@ -208,6 +216,35 @@ fn build_hourly_profile(
             }
         })
         .collect()
+}
+
+fn persist_to_db(state: &Arc<AppState>, key: &str, value: &Value) {
+    if let Some(pool) = state.db.clone() {
+        let key = key.to_string();
+        let data = value.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::db::writer::write_cached_response(&pool, &key, &data).await {
+                tracing::warn!("DB cache write failed for {}: {}", key, e);
+            }
+        });
+    }
+}
+
+async fn db_fallback(state: &Arc<AppState>, key: &str) -> Option<Value> {
+    if let Some(pool) = &state.db {
+        match crate::db::reader::get_cached_response(pool, key).await {
+            Ok(Some(mut data)) => {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("stale".to_string(), Value::Bool(true));
+                }
+                tracing::info!("Serving {} from DB fallback", key);
+                Some(data)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
 }
 
 fn build_heatmap(hourly_profile: &[HourlyProfileEntry]) -> Vec<HeatmapEntry> {

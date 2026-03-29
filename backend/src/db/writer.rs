@@ -164,6 +164,24 @@ pub async fn write_reserve_prices(
     Ok(())
 }
 
+/// Persist an API response to the api_cache table (upsert).
+pub async fn write_cached_response(
+    pool: &PgPool,
+    key: &str,
+    data: &serde_json::Value,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO api_cache (key, data, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (key) DO UPDATE SET data = $2, updated_at = NOW()",
+    )
+    .bind(key)
+    .bind(data)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Write hourly generation by source type.
 pub async fn write_generation(
     pool: &PgPool,

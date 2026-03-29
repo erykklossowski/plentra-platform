@@ -196,5 +196,16 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         .cache
         .set(CACHE_KEY.to_string(), value.clone(), state.config.cache_ttl_fuels);
 
+    // Persist to DB for future fallback
+    if let Some(pool) = state.db.clone() {
+        let key = CACHE_KEY.to_string();
+        let data = value.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::db::writer::write_cached_response(&pool, &key, &data).await {
+                tracing::warn!("DB cache write failed for {}: {}", key, e);
+            }
+        });
+    }
+
     (headers, Json(value))
 }
