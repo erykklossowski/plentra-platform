@@ -96,27 +96,57 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         return (headers, Json(cached.data));
     }
 
-    // Get fuel data
-    let fuel_value = match state.cache.get("fuels").or_else(|| state.cache.get_stale("fuels")) {
-        Some(cached) => cached.data,
-        None => {
-            return (
-                headers,
-                Json(serde_json::json!({
-                    "error": "Fuel data not available. Fetch /api/fuels first.",
-                    "timestamp": Utc::now().to_rfc3339()
-                })),
-            );
+    // Get fuel data — try cache, then actively fetch, then DB fallback
+    let fuel_value = if let Some(cached) = state.cache.get("fuels").or_else(|| state.cache.get_stale("fuels")) {
+        Some(cached.data)
+    } else {
+        // Cold start: actively fetch fuels
+        tracing::info!("generation: fuel cache empty, fetching from Stooq");
+        let (ttf, ara, eua) = tokio::join!(
+            crate::fetchers::stooq::fetch_ttf(&state.http_client),
+            crate::fetchers::stooq::fetch_ara(&state.http_client),
+            crate::fetchers::stooq::fetch_eua(&state.http_client),
+        );
+        match (ttf, ara, eua) {
+            (Ok(t), Ok(a), Ok(e)) => {
+                let fd = FuelData {
+                    ttf_eur_mwh: t.current_price,
+                    ttf_change_pct: t.change_pct,
+                    ttf_history_30d: t.history_30d,
+                    ara_usd_tonne: a.current_price,
+                    ara_change_pct: a.change_pct,
+                    ara_history_30d: a.history_30d,
+                    eua_eur_tonne: e.current_price,
+                    eua_change_pct: e.change_pct,
+                    eua_history_30d: e.history_30d,
+                    fetched_at: Utc::now().to_rfc3339(),
+                    stale: None,
+                };
+                let v = serde_json::to_value(&fd).unwrap();
+                state.cache.set("fuels".to_string(), v.clone(), state.config.cache_ttl_fuels);
+                Some(v)
+            }
+            _ => None,
         }
     };
 
-    let fuel: FuelData = match serde_json::from_value(fuel_value) {
-        Ok(f) => f,
-        Err(_) => {
+    let fuel: FuelData = match fuel_value.and_then(|v| serde_json::from_value(v).ok()) {
+        Some(f) => f,
+        None => {
+            // Last resort: serve DB-cached generation response
+            if let Some(pool) = &state.db {
+                if let Ok(Some(mut data)) = crate::db::reader::get_cached_response(pool, CACHE_KEY).await {
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.insert("stale".to_string(), Value::Bool(true));
+                    }
+                    tracing::info!("Serving generation from DB fallback");
+                    return (headers, Json(data));
+                }
+            }
             return (
                 headers,
                 Json(serde_json::json!({
-                    "error": "Failed to parse cached fuel data",
+                    "error": "Fuel data not available",
                     "timestamp": Utc::now().to_rfc3339()
                 })),
             );
@@ -134,20 +164,20 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         _ => 1.08, // fallback
     };
 
-    // Get DA price from cached residual data or ENTSO-E
+    // Get DA price from ENTSO-E, fall back to DB-cached value
     let da_price = if let Some(token) = &state.config.entsoe_token {
         if !token.is_empty() {
             match entsoe::fetch_day_ahead_prices(&state.http_client, token, "10YPL-AREA-----S")
                 .await
             {
                 Ok(hourly) => entsoe::average_da_price(&hourly),
-                Err(_) => 85.0, // fallback
+                Err(_) => da_price_from_db(&state).await,
             }
         } else {
-            85.0
+            da_price_from_db(&state).await
         }
     } else {
-        85.0
+        da_price_from_db(&state).await
     };
 
     // Convert ARA from USD to EUR
@@ -208,4 +238,16 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     }
 
     (headers, Json(value))
+}
+
+/// Get DA price from the last cached generation response in DB.
+async fn da_price_from_db(state: &Arc<AppState>) -> f64 {
+    if let Some(pool) = &state.db {
+        if let Ok(Some(data)) = crate::db::reader::get_cached_response(pool, CACHE_KEY).await {
+            if let Some(price) = data.get("rdn_eur_mwh").and_then(|v| v.as_f64()) {
+                return price;
+            }
+        }
+    }
+    0.0
 }
