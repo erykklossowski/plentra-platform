@@ -3,7 +3,7 @@ import DispatchSignalBadge from "@/components/generation/DispatchSignalBadge";
 import JKZTable from "@/components/generation/JKZTable";
 import SpreadChart from "@/components/charts/SpreadChart";
 
-export const revalidate = 900;
+export const revalidate = 300;
 
 export default async function GenerationPage() {
   const [genResult, spreadResult] = await Promise.allSettled([
