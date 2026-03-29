@@ -99,9 +99,9 @@ pub async fn debug_print_stats(
         )
         .await?;
 
-    tracing::info!("=== DEBUG {} / {} ===", dataset, symbol);
+    tracing::debug!("=== DEBUG {} / {} ===", dataset, symbol);
     while let Some(msg) = decoder.decode_record::<StatMsg>().await? {
-        tracing::info!(
+        tracing::debug!(
             "  stat_type={} price_f64={:.6} ts_ref={}",
             msg.stat_type,
             msg.price_f64(),
