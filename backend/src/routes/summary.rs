@@ -178,6 +178,27 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         state
             .cache
             .set("summary".to_string(), summary.clone(), state.config.cache_ttl_fuels);
+
+        // Persist to DB for future cold-start fallback
+        if let Some(pool) = state.db.clone() {
+            let data = summary.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::db::writer::write_cached_response(&pool, "summary", &data).await {
+                    tracing::warn!("DB cache write failed for summary: {}", e);
+                }
+            });
+        }
+    } else if retrospective_text.is_empty() {
+        // No LLM text at all — try DB fallback for the whole summary
+        if let Some(pool) = &state.db {
+            if let Ok(Some(mut cached)) = crate::db::reader::get_cached_response(pool, "summary").await {
+                if let Some(obj) = cached.as_object_mut() {
+                    obj.insert("stale".to_string(), Value::Bool(true));
+                }
+                tracing::info!("Serving summary from DB fallback");
+                return (headers, Json(cached));
+            }
+        }
     }
 
     (headers, Json(summary))
@@ -198,7 +219,7 @@ async fn build_retrospective_text(
         return (text, gen_at, false, false);
     }
 
-    // No API key — return stale cache if available, otherwise empty
+    // No API key — return stale cache or DB fallback
     let api_key = match &state.config.anthropic_api_key {
         Some(key) if !key.is_empty() => key.clone(),
         _ => {
@@ -206,6 +227,10 @@ async fn build_retrospective_text(
                 let text = stale.data["text"].as_str().unwrap_or("").to_string();
                 let gen_at = stale.data["generated_at"].as_str().map(|s| s.to_string());
                 return (text, gen_at, true, false);
+            }
+            // Try DB fallback for retrospective text
+            if let Some(text) = retrospective_from_db(state).await {
+                return (text, None, true, false);
             }
             return ("".to_string(), None, false, true);
         }
@@ -240,11 +265,14 @@ async fn build_retrospective_text(
                 fd
             }
             _ => {
-                tracing::warn!("summary: fuel fetch failed on cold start — no retrospective");
+                tracing::warn!("summary: fuel fetch failed on cold start");
                 if let Some(stale) = state.cache.get_stale("retrospective") {
                     let text = stale.data["text"].as_str().unwrap_or("").to_string();
                     let gen_at = stale.data["generated_at"].as_str().map(|s| s.to_string());
                     return (text, gen_at, true, false);
+                }
+                if let Some(text) = retrospective_from_db(state).await {
+                    return (text, None, true, false);
                 }
                 return ("".to_string(), None, false, true);
             }
@@ -381,23 +409,49 @@ async fn build_retrospective_text(
     match generate_retrospective(&state.http_client, prompt, &api_key).await {
         Ok(text) => {
             let gen_at = Utc::now().to_rfc3339();
+            let retro_json = json!({ "text": text, "generated_at": gen_at });
             state.cache.set(
                 "retrospective".to_string(),
-                json!({ "text": text, "generated_at": gen_at }),
+                retro_json.clone(),
                 43200, // 12h — refresh twice a day
             );
+            // Persist retrospective to DB for cold-start fallback
+            if let Some(pool) = state.db.clone() {
+                let data = retro_json;
+                tokio::spawn(async move {
+                    if let Err(e) = crate::db::writer::write_cached_response(&pool, "retrospective", &data).await {
+                        tracing::warn!("DB cache write failed for retrospective: {}", e);
+                    }
+                });
+            }
             (text, Some(gen_at), false, false)
         }
         Err(e) => {
             tracing::warn!("Claude API error: {e}");
-            // Try stale cache
+            // Try stale cache, then DB fallback
             if let Some(stale) = state.cache.get_stale("retrospective") {
                 let text = stale.data["text"].as_str().unwrap_or("").to_string();
                 let gen_at = stale.data["generated_at"].as_str().map(|s| s.to_string());
                 (text, gen_at, true, false)
+            } else if let Some(text) = retrospective_from_db(state).await {
+                (text, None, true, false)
             } else {
                 ("".to_string(), None, false, true)
             }
         }
     }
+}
+
+/// Read the last LLM retrospective text from DB.
+async fn retrospective_from_db(state: &Arc<AppState>) -> Option<String> {
+    if let Some(pool) = &state.db {
+        if let Ok(Some(data)) = crate::db::reader::get_cached_response(pool, "retrospective").await {
+            let text = data["text"].as_str().unwrap_or("").to_string();
+            if !text.is_empty() {
+                tracing::info!("Serving retrospective from DB fallback");
+                return Some(text);
+            }
+        }
+    }
+    None
 }
