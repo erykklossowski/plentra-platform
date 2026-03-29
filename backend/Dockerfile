@@ -1,7 +1,8 @@
-FROM rust:1.85-slim AS builder
+FROM rust:1.88-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y pkg-config libssl-dev
 COPY Cargo.toml Cargo.lock ./
+COPY migrations ./migrations
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release
 RUN rm src/main.rs
