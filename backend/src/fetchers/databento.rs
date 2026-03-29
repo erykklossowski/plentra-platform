@@ -30,7 +30,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
         dataset: "IFEU.IMPACT",
         symbol: "TFU.FUT",
         unit: "EUR/MWh",
-        settlement_stat_type: 1, // verify via debug_print_stats
+        settlement_stat_type: 4, // confirmed: SettlementPrice_print_stats
         price_min: 5.0,
         price_max: 300.0,
     },
