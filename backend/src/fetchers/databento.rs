@@ -30,7 +30,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
         dataset: "IFEU.IMPACT",
         symbol: "TFU.FUT",
         unit: "EUR/MWh",
-        settlement_stat_type: 4, // confirmed: SettlementPrice_print_stats
+        settlement_stat_type: 13, // stat_type=4 returns 0.0 for TTF; 13 has real settlement (~56 EUR/MWh)
         price_min: 5.0,
         price_max: 300.0,
     },
@@ -206,8 +206,10 @@ pub async fn fetch_history(
 pub async fn fetch_today(
     api_key: &str,
 ) -> Vec<(&'static str, f64, &'static str)> {
-    let today = Utc::now().date_naive();
-    let tomorrow = today + chrono::Duration::days(1);
+    let now = Utc::now();
+    let today = now.date_naive();
+    // Use now (not tomorrow midnight) as end to avoid 422 when dataset hasn't caught up yet
+    let now_odt = OffsetDateTime::from_unix_timestamp(now.timestamp()).unwrap();
 
     let mut results = Vec::new();
 
@@ -233,7 +235,7 @@ pub async fn fetch_today(
             .get_range(
                 &GetRangeParams::builder()
                     .dataset(instrument.dataset)
-                    .date_time_range(to_time_odt(today)..to_time_odt(tomorrow))
+                    .date_time_range(to_time_odt(today)..now_odt)
                     .symbols(vec![instrument.symbol])
                     .stype_in(SType::Parent)
                     .schema(Schema::Statistics)
@@ -262,6 +264,14 @@ pub async fn fetch_today(
                 || price < instrument.price_min
                 || price > instrument.price_max
             {
+                tracing::debug!(
+                    "Databento {} price {:.4} outside bounds [{}, {}] — skipping (stat_type={})",
+                    instrument.name,
+                    price,
+                    instrument.price_min,
+                    instrument.price_max,
+                    msg.stat_type
+                );
                 continue;
             }
             tracing::info!(
