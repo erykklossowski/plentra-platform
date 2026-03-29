@@ -93,7 +93,7 @@ pub async fn debug_print_stats(
                         ..time::macros::datetime!(2026-03-28 00:00 UTC),
                 )
                 .symbols(vec![symbol])
-                .stype_in(SType::RawSymbol)
+                .stype_in(SType::Parent)
                 .schema(Schema::Statistics)
                 .build(),
         )
@@ -141,7 +141,7 @@ pub async fn fetch_history(
                     .dataset(instrument.dataset)
                     .date_time_range(to_time_odt(start_date)..to_time_odt(today))
                     .symbols(vec![instrument.symbol])
-                    .stype_in(SType::RawSymbol)
+                    .stype_in(SType::Parent)
                     .schema(Schema::Statistics)
                     .build(),
             )
@@ -235,7 +235,7 @@ pub async fn fetch_today(
                     .dataset(instrument.dataset)
                     .date_time_range(to_time_odt(today)..to_time_odt(tomorrow))
                     .symbols(vec![instrument.symbol])
-                    .stype_in(SType::RawSymbol)
+                    .stype_in(SType::Parent)
                     .schema(Schema::Statistics)
                     .build(),
             )

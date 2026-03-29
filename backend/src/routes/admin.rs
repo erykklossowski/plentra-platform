@@ -178,7 +178,7 @@ pub async fn handler(
                         &ResolveParams::builder()
                             .dataset(dataset.to_string())
                             .symbols(sym_strings)
-                            .stype_in(SType::RawSymbol)
+                            .stype_in(SType::Parent)
                             .stype_out(SType::InstrumentId)
                             .date_range(
                                 time::macros::date!(2026-03-27)
