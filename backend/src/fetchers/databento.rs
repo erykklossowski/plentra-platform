@@ -30,7 +30,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
         dataset: "IFEU.IMPACT",
         symbol: "TFU.FUT",
         unit: "EUR/MWh",
-        settlement_stat_type: 13, // stat_type=4 returns 0.0 for TTF; 13 has real settlement (~56 EUR/MWh)
+        settlement_stat_type: 4, // SettlementPrice — same for all ICE instruments
         price_min: 5.0,
         price_max: 300.0,
     },
@@ -165,14 +165,9 @@ pub async fn fetch_history(
                 continue;
             }
 
+            // Skip prices outside bounds silently — SType::Parent returns many
+            // contracts (expired/far-out) with price=0.0, this is normal behavior
             if price < instrument.price_min || price > instrument.price_max {
-                tracing::warn!(
-                    "Databento {} price {:.4} outside bounds [{}, {}] — skipping",
-                    instrument.name,
-                    price,
-                    instrument.price_min,
-                    instrument.price_max
-                );
                 continue;
             }
 
@@ -187,9 +182,10 @@ pub async fn fetch_history(
         }
 
         tracing::info!(
-            "Databento backfill: {} settlement records for {}",
+            "Databento {}: {} valid settlement records (stat_type={})",
+            instrument.name,
             count,
-            instrument.name
+            instrument.settlement_stat_type
         );
     }
 
@@ -264,14 +260,6 @@ pub async fn fetch_today(
                 || price < instrument.price_min
                 || price > instrument.price_max
             {
-                tracing::debug!(
-                    "Databento {} price {:.4} outside bounds [{}, {}] — skipping (stat_type={})",
-                    instrument.name,
-                    price,
-                    instrument.price_min,
-                    instrument.price_max,
-                    msg.stat_type
-                );
                 continue;
             }
             tracing::info!(
