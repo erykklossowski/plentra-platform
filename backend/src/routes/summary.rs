@@ -6,7 +6,6 @@ use axum::Json;
 use chrono::Utc;
 use serde_json::{json, Value};
 
-use crate::fetchers::stooq;
 use crate::models::fuel::FuelData;
 use crate::models::spread::{SpreadData, SpreadHistoryEntry};
 use crate::services::retrospective::{
@@ -334,36 +333,24 @@ async fn build_retrospective_text(
         }
     };
 
-    // Resolve fuel data — use cached value or actively fetch from Stooq
+    // Resolve fuel data — use cached value or DB fallback
     let fuel: FuelData = if let Some(f) = fuel_opt.clone() {
         f
-    } else {
-        let (ttf_res, ara_res, eua_res) = tokio::join!(
-            stooq::fetch_ttf(&state.http_client),
-            stooq::fetch_ara(&state.http_client),
-            stooq::fetch_eua(&state.http_client),
-        );
-        match (ttf_res, ara_res, eua_res) {
-            (Ok(ttf), Ok(ara), Ok(eua)) => {
-                let fd = FuelData {
-                    ttf_eur_mwh: ttf.current_price,
-                    ttf_change_pct: ttf.change_pct,
-                    ttf_history_30d: ttf.history_30d,
-                    ara_usd_tonne: ara.current_price,
-                    ara_change_pct: ara.change_pct,
-                    ara_history_30d: ara.history_30d,
-                    eua_eur_tonne: eua.current_price,
-                    eua_change_pct: eua.change_pct,
-                    eua_history_30d: eua.history_30d,
-                    fetched_at: Utc::now().to_rfc3339(),
-                    stale: None,
-                };
-                let v = serde_json::to_value(&fd).unwrap();
-                state.cache.set("fuels".to_string(), v, state.config.cache_ttl_fuels);
-                fd
-            }
+    } else if let Some(pool) = &state.db {
+        // Try DB cached fuels response
+        match crate::db::reader::get_cached_response(pool, "fuels").await {
+            Ok(Some(v)) => match serde_json::from_value(v) {
+                Ok(fd) => fd,
+                Err(_) => {
+                    tracing::warn!("summary: fuel DB cache parse failed");
+                    if let Some(text) = retrospective_from_db(state).await {
+                        return (text, None, true, false);
+                    }
+                    return ("".to_string(), None, false, true);
+                }
+            },
             _ => {
-                tracing::warn!("summary: fuel fetch failed on cold start");
+                tracing::warn!("summary: no fuel data available");
                 if let Some(stale) = state.cache.get_stale("retrospective") {
                     let text = stale.data["text"].as_str().unwrap_or("").to_string();
                     let gen_at = stale.data["generated_at"].as_str().map(|s| s.to_string());
@@ -375,6 +362,9 @@ async fn build_retrospective_text(
                 return ("".to_string(), None, false, true);
             }
         }
+    } else {
+        tracing::warn!("summary: no DB, no fuel cache");
+        return ("".to_string(), None, false, true);
     };
 
     // Resolve spread data — compute from fuel if not cached

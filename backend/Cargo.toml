@@ -26,3 +26,5 @@ chrono-tz = "0.9"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "migrate"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 augurs = { version = "0.10", features = ["mstl", "ets", "changepoint", "dtw"] }
+databento = { version = "0.40", default-features = false, features = ["historical"] }
+time = { version = "0.3", features = ["macros"] }

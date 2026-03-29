@@ -53,64 +53,49 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         return (headers, Json(cached.data));
     }
 
-    // Get fuel data (from cache or fresh)
+    // Get fuel data from cache, stale cache, or DB fallback
     let fuel_value = if let Some(cached) = state.cache.get("fuels") {
         cached.data
-    } else {
-        // Need to fetch fuels first
-        let (ttf_res, ara_res, eua_res) = tokio::join!(
-            crate::fetchers::stooq::fetch_ttf(&state.http_client),
-            crate::fetchers::stooq::fetch_ara(&state.http_client),
-            crate::fetchers::stooq::fetch_eua(&state.http_client),
-        );
-
-        match (ttf_res, ara_res, eua_res) {
-            (Ok(ttf), Ok(ara), Ok(eua)) => {
-                let fuel_data = crate::models::fuel::FuelData {
-                    ttf_eur_mwh: ttf.current_price,
-                    ttf_change_pct: ttf.change_pct,
-                    ttf_history_30d: ttf.history_30d,
-                    ara_usd_tonne: ara.current_price,
-                    ara_change_pct: ara.change_pct,
-                    ara_history_30d: ara.history_30d,
-                    eua_eur_tonne: eua.current_price,
-                    eua_change_pct: eua.change_pct,
-                    eua_history_30d: eua.history_30d,
-                    fetched_at: Utc::now().to_rfc3339(),
-                    stale: None,
-                };
-                let value = serde_json::to_value(&fuel_data).unwrap();
-                state.cache.set(
-                    "fuels".to_string(),
-                    value.clone(),
-                    state.config.cache_ttl_fuels,
-                );
-                value
-            }
+    } else if let Some(stale) = state.cache.get_stale("fuels") {
+        stale.data
+    } else if let Some(pool) = &state.db {
+        match crate::db::reader::get_cached_response(pool, "fuels").await {
+            Ok(Some(v)) => v,
             _ => {
-                // Fuel fetch failed — try stale fuel cache, then DB fallback for spreads
-                if let Some(stale) = state.cache.get_stale("fuels") {
-                    stale.data
-                } else if let Some(data) = db_fallback(&state, CACHE_KEY).await {
+                if let Some(data) = db_fallback(&state, CACHE_KEY).await {
                     return (headers, Json(data));
-                } else {
-                    return (
-                        headers,
-                        Json(serde_json::json!({
-                            "data_status": "unavailable",
-                            "message": "Spread data temporarily unavailable",
-                            "css_spot": null,
-                            "cds_spot_eta42": null,
-                            "cds_spot_eta34": null,
-                            "dispatch_signal": "UNKNOWN",
-                            "history_30d": [],
-                            "fetched_at": Utc::now().to_rfc3339(),
-                            "stale": true,
-                        })),
-                    );
                 }
+                return (
+                    headers,
+                    Json(serde_json::json!({
+                        "data_status": "unavailable",
+                        "message": "Spread data temporarily unavailable",
+                        "css_spot": null,
+                        "cds_spot_eta42": null,
+                        "cds_spot_eta34": null,
+                        "dispatch_signal": "UNKNOWN",
+                        "history_30d": [],
+                        "fetched_at": Utc::now().to_rfc3339(),
+                        "stale": true,
+                    })),
+                );
             }
         }
+    } else {
+        return (
+            headers,
+            Json(serde_json::json!({
+                "data_status": "unavailable",
+                "message": "Spread data temporarily unavailable",
+                "css_spot": null,
+                "cds_spot_eta42": null,
+                "cds_spot_eta34": null,
+                "dispatch_signal": "UNKNOWN",
+                "history_30d": [],
+                "fetched_at": Utc::now().to_rfc3339(),
+                "stale": true,
+            })),
+        );
     };
 
     let fuel: FuelData = serde_json::from_value(fuel_value).unwrap();
@@ -143,8 +128,8 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     // Calculate MoM percentage changes from history arrays
     let css_history: Vec<f64> = history.iter().map(|h| h.css).collect();
     let cds_history: Vec<f64> = history.iter().map(|h| h.cds_42).collect();
-    let css_pct_change = crate::fetchers::stooq::mom_delta_pct(&css_history);
-    let cds_pct_change = crate::fetchers::stooq::mom_delta_pct(&cds_history);
+    let css_pct_change = crate::fetchers::databento::mom_delta_pct(&css_history);
+    let cds_pct_change = crate::fetchers::databento::mom_delta_pct(&cds_history);
 
     let carbon_impact = round2(-fuel.eua_eur_tonne * 0.202);
 

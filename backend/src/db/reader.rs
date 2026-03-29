@@ -30,6 +30,20 @@ pub async fn get_fuel_history(
     Ok(rows)
 }
 
+/// Latest fuel price for a ticker (most recent row).
+pub async fn get_latest_fuel_price(
+    pool: &PgPool,
+    ticker: &str,
+) -> anyhow::Result<Option<f64>> {
+    let row: Option<(f64,)> = sqlx::query_as(
+        "SELECT close FROM fuel_daily WHERE ticker = $1 ORDER BY ts DESC LIMIT 1",
+    )
+    .bind(ticker)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(c,)| c))
+}
+
 /// Most recent N days of fuel close prices for sparkline rendering.
 pub async fn get_fuel_sparkline(
     pool: &PgPool,

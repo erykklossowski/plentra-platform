@@ -6,6 +6,7 @@ pub struct Config {
     pub database_url: Option<String>,
     pub entsoe_token: Option<String>,
     pub anthropic_api_key: Option<String>,
+    pub databento_api_key: Option<String>,
     pub cache_ttl_fuels: u64,
     pub cache_ttl_entsoe: u64,
     pub allowed_origins: Vec<String>,
@@ -21,6 +22,7 @@ impl Config {
             database_url: env::var("DATABASE_URL").ok(),
             entsoe_token: env::var("ENTSOE_TOKEN").ok(),
             anthropic_api_key: env::var("ANTHROPIC_API_KEY").ok(),
+            databento_api_key: env::var("DATABENTO_API_KEY").ok(),
             cache_ttl_fuels: env::var("CACHE_TTL_FUELS")
                 .ok()
                 .and_then(|v| v.parse().ok())

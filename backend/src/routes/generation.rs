@@ -96,38 +96,17 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         return (headers, Json(cached.data));
     }
 
-    // Get fuel data — try cache, then actively fetch, then DB fallback
+    // Get fuel data — try cache, stale cache, then DB fallback
     let fuel_value = if let Some(cached) = state.cache.get("fuels").or_else(|| state.cache.get_stale("fuels")) {
         Some(cached.data)
-    } else {
-        // Cold start: actively fetch fuels
-        tracing::info!("generation: fuel cache empty, fetching from Stooq");
-        let (ttf, ara, eua) = tokio::join!(
-            crate::fetchers::stooq::fetch_ttf(&state.http_client),
-            crate::fetchers::stooq::fetch_ara(&state.http_client),
-            crate::fetchers::stooq::fetch_eua(&state.http_client),
-        );
-        match (ttf, ara, eua) {
-            (Ok(t), Ok(a), Ok(e)) => {
-                let fd = FuelData {
-                    ttf_eur_mwh: t.current_price,
-                    ttf_change_pct: t.change_pct,
-                    ttf_history_30d: t.history_30d,
-                    ara_usd_tonne: a.current_price,
-                    ara_change_pct: a.change_pct,
-                    ara_history_30d: a.history_30d,
-                    eua_eur_tonne: e.current_price,
-                    eua_change_pct: e.change_pct,
-                    eua_history_30d: e.history_30d,
-                    fetched_at: Utc::now().to_rfc3339(),
-                    stale: None,
-                };
-                let v = serde_json::to_value(&fd).unwrap();
-                state.cache.set("fuels".to_string(), v.clone(), state.config.cache_ttl_fuels);
-                Some(v)
-            }
+    } else if let Some(pool) = &state.db {
+        tracing::info!("generation: fuel cache empty, trying DB fallback");
+        match crate::db::reader::get_cached_response(pool, "fuels").await {
+            Ok(Some(v)) => Some(v),
             _ => None,
         }
+    } else {
+        None
     };
 
     let fuel: FuelData = match fuel_value.and_then(|v| serde_json::from_value(v).ok()) {
@@ -168,11 +147,8 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     let spread: Option<SpreadData> =
         spread_value.and_then(|c| serde_json::from_value(c.data).ok());
 
-    // Get EUR/USD rate
-    let eur_usd = match crate::fetchers::stooq::fetch_eurusd(&state.http_client).await {
-        Ok(rate) if rate > 0.5 && rate < 2.0 => rate,
-        _ => 1.08, // fallback
-    };
+    // EUR/USD rate — hardcoded fallback (previously fetched from Stooq, now deprecated)
+    let eur_usd = 1.08;
 
     // Get DA price from ENTSO-E, fall back to DB-cached value
     let da_price = if let Some(token) = &state.config.entsoe_token {

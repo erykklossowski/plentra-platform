@@ -11,7 +11,6 @@ use serde_json::json;
 use sqlx::PgPool;
 
 use crate::fetchers::pse::{fetch_pse, PozRedozeRecord, ReservePriceRecord};
-use crate::fetchers::stooq;
 use crate::AppState;
 
 #[derive(Deserialize)]
@@ -46,18 +45,44 @@ pub async fn handler(
     };
 
     let days = params.days.unwrap_or(30).min(730);
-    let source = params.source.as_deref().unwrap_or("stooq");
+    let source = params.source.as_deref().unwrap_or("databento");
 
     let client = state.http_client.clone();
+    let config = state.config.clone();
 
     match source {
-        "stooq" => {
+        "databento" => {
+            let api_key = match config.databento_api_key {
+                Some(k) => k,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": "DATABENTO_API_KEY not set"})),
+                    )
+                        .into_response()
+                }
+            };
             tokio::spawn(async move {
-                match backfill_stooq(&client, &pool, days).await {
-                    Ok(n) => tracing::info!("Stooq backfill: {} rows written", n),
-                    Err(e) => tracing::error!("Stooq backfill failed: {}", e),
+                match backfill_databento(&api_key, &pool, days).await {
+                    Ok(n) => tracing::info!("Databento backfill: {} rows written", n),
+                    Err(e) => tracing::error!("Databento backfill failed: {}", e),
                 }
             });
+            Json(json!({
+                "status": "backfill started",
+                "source": "databento",
+                "days": days,
+                "instruments": ["TTF", "EUA", "ARA"],
+                "note": "check Railway logs for progress"
+            }))
+            .into_response()
+        }
+        "stooq" => {
+            Json(json!({
+                "status": "deprecated",
+                "message": "Stooq removed. Use source=databento."
+            }))
+            .into_response()
         }
         "curtailment" => {
             tokio::spawn(async move {
@@ -66,6 +91,13 @@ pub async fn handler(
                     Err(e) => tracing::error!("Curtailment backfill failed: {}", e),
                 }
             });
+            Json(json!({
+                "status": "backfill started",
+                "source": source,
+                "days": days,
+                "note": "check Railway logs for progress"
+            }))
+            .into_response()
         }
         "reserves" => {
             tokio::spawn(async move {
@@ -74,51 +106,41 @@ pub async fn handler(
                     Err(e) => tracing::error!("Reserves backfill failed: {}", e),
                 }
             });
+            Json(json!({
+                "status": "backfill started",
+                "source": source,
+                "days": days,
+                "note": "check Railway logs for progress"
+            }))
+            .into_response()
         }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: stooq, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, curtailment, reserves"})),
             )
                 .into_response()
         }
     }
-
-    Json(json!({
-        "status": "backfill started",
-        "source": source,
-        "days": days,
-        "note": "check Railway logs for progress"
-    }))
-    .into_response()
 }
 
-async fn backfill_stooq(
-    client: &reqwest::Client,
+async fn backfill_databento(
+    api_key: &str,
     pool: &PgPool,
     days: i64,
 ) -> anyhow::Result<usize> {
-    let tickers = [
-        ("ttf.f",  "TTF", "EUR/MWh"),
-        ("co2e.f", "EUA", "EUR/t"),
-        ("arac.f", "ARA", "USD/t"),
-    ];
+    let records = crate::fetchers::databento::fetch_history(api_key, days).await?;
 
-    let mut total = 0usize;
-    for (stooq_sym, ticker, unit) in &tickers {
-        tracing::info!("Backfilling {} from Stooq ({} days)...", ticker, days);
-
-        let rows = stooq::fetch_history_csv(client, stooq_sym, days as u64).await?;
-        let batch: Vec<_> = rows
-            .iter()
-            .map(|(ts, close)| (*ts, *ticker, *close, *unit, "STOOQ"))
-            .collect();
-        total += crate::db::writer::write_fuel_prices_batch(pool, &batch).await?;
-
-        // Rate limit
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let mut written = 0usize;
+    for (ts, name, price, unit) in &records {
+        match crate::db::writer::write_fuel_price(pool, *ts, name, *price, unit, "DATABENTO").await
+        {
+            Ok(()) => written += 1,
+            Err(e) => tracing::warn!("Backfill write failed for {} at {}: {}", name, ts, e),
+        }
     }
-    Ok(total)
+    tracing::info!("Backfill: {}/{} rows written", written, records.len());
+    Ok(written)
 }
 
 fn parse_pse_dtime_utc(dtime: &str) -> Option<chrono::DateTime<Utc>> {

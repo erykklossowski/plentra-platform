@@ -69,6 +69,93 @@ async fn main() {
         .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::OPTIONS])
         .allow_headers(tower_http::cors::Any);
 
+    // Databento daily fuel scheduler at 19:30 UTC
+    {
+        let sched_state = state.clone();
+        tokio::spawn(async move {
+            // Verify API key on startup
+            if let Some(ref key) = sched_state.config.databento_api_key {
+                match fetchers::databento::verify_api_key(key).await {
+                    Ok(()) => {}
+                    Err(e) => tracing::warn!("Databento API key check failed: {}", e),
+                }
+            }
+
+            loop {
+                let now = chrono::Utc::now();
+                let target = now
+                    .date_naive()
+                    .and_hms_opt(19, 30, 0)
+                    .unwrap()
+                    .and_utc();
+                let next_run = if now < target {
+                    target
+                } else {
+                    (now.date_naive() + chrono::Duration::days(1))
+                        .and_hms_opt(19, 30, 0)
+                        .unwrap()
+                        .and_utc()
+                };
+
+                let secs = (next_run - now).num_seconds().max(0) as u64;
+                tracing::info!(
+                    "Fuel scheduler: sleeping {}s until {}",
+                    secs,
+                    next_run.format("%Y-%m-%d %H:%M UTC")
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(secs)).await;
+
+                let Some(ref api_key) = sched_state.config.databento_api_key else {
+                    tracing::warn!("Fuel scheduler: DATABENTO_API_KEY not set, skipping");
+                    continue;
+                };
+
+                tracing::info!("Fuel scheduler: running Databento fetch");
+                let settlements = fetchers::databento::fetch_today(api_key).await;
+
+                if settlements.is_empty() {
+                    tracing::warn!("Fuel scheduler: no settlements — weekend or holiday");
+                    continue;
+                }
+
+                // Invalidate caches
+                sched_state.cache.invalidate("fuels");
+                sched_state.cache.invalidate("summary");
+                sched_state.cache.invalidate("forecast");
+                sched_state.cache.invalidate("spreads");
+
+                // Persist to TimescaleDB
+                if let Some(ref pool) = sched_state.db {
+                    let ts = chrono::Utc::now()
+                        .date_naive()
+                        .and_hms_opt(17, 30, 0)
+                        .unwrap()
+                        .and_utc();
+
+                    for (name, price, unit) in &settlements {
+                        match crate::db::writer::write_fuel_price(
+                            pool, ts, name, *price, unit, "DATABENTO",
+                        )
+                        .await
+                        {
+                            Ok(()) => tracing::info!(
+                                "Fuel scheduler: wrote {} {:.4} {}",
+                                name,
+                                price,
+                                unit
+                            ),
+                            Err(e) => tracing::warn!(
+                                "Fuel scheduler: DB write failed for {}: {}",
+                                name,
+                                e
+                            ),
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let app = Router::new()
         .route("/health", get(routes::health::handler))
         .route("/api/fuels", get(routes::fuels::handler))
