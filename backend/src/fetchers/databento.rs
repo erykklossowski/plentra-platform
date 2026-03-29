@@ -30,7 +30,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
         dataset: "IFEU.IMPACT",
         symbol: "TFU.FUT",
         unit: "EUR/MWh",
-        settlement_stat_type: 3, // SettlementPrice — same for all ICE instruments
+        settlement_stat_type: 10, // SettlementPrice — same for all ICE instruments
         price_min: 5.0,
         price_max: 300.0,
     },
@@ -39,7 +39,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
         dataset: "IFEU.IMPACT",
         symbol: "ECF.FUT",
         unit: "EUR/t",
-        settlement_stat_type: 3, // confirmed: SettlementPrice
+        settlement_stat_type: 10, // confirmed: SettlementPrice
         price_min: 5.0,
         price_max: 200.0,
     },
@@ -48,7 +48,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
         dataset: "IFEU.IMPACT",
         symbol: "ATW.FUT",
         unit: "USD/t",
-        settlement_stat_type: 3, // confirmed: SettlementPrice
+        settlement_stat_type: 10, // confirmed: SettlementPrice
         price_min: 30.0,
         price_max: 500.0,
     },
