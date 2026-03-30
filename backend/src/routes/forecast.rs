@@ -117,13 +117,7 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 "message": msg,
                 "latest_break_index": c.latest_break,
             }))
-        }),
-        "methodology": {
-            "fuel_model": "ETS (AutoETS via augurs crate)",
-            "decomposition": "MSTL (Multiple STL via augurs crate)",
-            "changepoint": "ARGPCP (Autoregressive Gaussian Process Changepoint Detection)",
-            "note": "Forecasts based on price history only. OZE/weather integration planned for Phase 8.",
-        }
+        })
     });
 
     // Cache for 1 hour

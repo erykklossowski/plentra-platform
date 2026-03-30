@@ -4,7 +4,7 @@ import FanChart from "@/components/forecast/FanChart";
 import DecompositionChart from "@/components/forecast/DecompositionChart";
 import ChangepointAlerts from "@/components/forecast/ChangepointAlerts";
 
-export const revalidate = 3600;
+export const dynamic = "force-dynamic";
 
 export default async function ForecastPage() {
   const [result] = await Promise.allSettled([getForecast()]);

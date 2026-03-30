@@ -322,11 +322,5 @@ export interface ForecastResponse extends DataStatusFields {
   };
   decomposition?: DecompositionData;
   changepoint_alerts?: ChangepointAlert;
-  methodology?: {
-    fuel_model: string;
-    decomposition: string;
-    changepoint: string;
-    note: string;
-  };
   stale?: boolean;
 }
