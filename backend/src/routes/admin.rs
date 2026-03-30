@@ -215,30 +215,28 @@ pub async fn handler(
                         .into_response()
                 }
             };
-            // Use yesterday as end date — today's bars aren't available until after close,
-            // and some dataset subscriptions may not cover the current day.
-            let yesterday = Utc::now().date_naive() - chrono::Duration::days(1);
-            let start_date = yesterday - chrono::Duration::days(days);
-            match crate::fetchers::databento::fetch_ohlcv(&api_key, start_date, yesterday).await {
-                Err(e) => {
-                    tracing::error!("OHLCV backfill failed: {}", e);
-                    Json(json!({ "status": "error", "error": format!("{}", e) })).into_response()
-                }
-                Ok(bars) => {
-                    let mut written = 0usize;
-                    for b in &bars {
-                        if crate::db::writer::upsert_fuel_ohlcv(&pool, b).await.is_ok() {
-                            written += 1;
+            tokio::spawn(async move {
+                // Use yesterday as end date — today's bars aren't available until after close
+                let yesterday = Utc::now().date_naive() - chrono::Duration::days(1);
+                let start_date = yesterday - chrono::Duration::days(days);
+                match crate::fetchers::databento::fetch_ohlcv(&api_key, start_date, yesterday).await {
+                    Err(e) => tracing::error!("OHLCV backfill failed: {}", e),
+                    Ok(bars) => {
+                        let mut written = 0usize;
+                        for b in &bars {
+                            if crate::db::writer::upsert_fuel_ohlcv(&pool, b).await.is_ok() {
+                                written += 1;
+                            }
                         }
+                        tracing::info!("OHLCV backfill: {}/{} bars written", written, bars.len());
                     }
-                    Json(json!({
-                        "status": "done",
-                        "bars_fetched": bars.len(),
-                        "bars_written": written,
-                        "days": days
-                    })).into_response()
                 }
-            }
+            });
+            Json(json!({
+                "status": "ohlcv backfill started",
+                "days": days,
+                "note": "check Railway logs for progress"
+            })).into_response()
         }
         "recalculate_spreads" => {
             let app_state = state.clone();
