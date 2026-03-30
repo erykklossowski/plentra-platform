@@ -565,40 +565,40 @@ fn parse_da_prices_xml(xml: &str) -> Result<Vec<(u32, f64)>> {
     Ok(hourly)
 }
 
-/// Fetch hourly generation for a specific date (for backfill).
-pub async fn fetch_hourly_generation_for_date(
+/// Fetch hourly generation for a date range (for backfill).
+pub async fn fetch_hourly_generation_for_range(
     client: &reqwest::Client,
     token: &str,
     period_start: &str,
     period_end: &str,
-) -> Result<Vec<(u32, GenerationByType)>> {
+) -> Result<Vec<(chrono::NaiveDate, u32, String, f64)>> {
     let url = format!(
         "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A75&processType=A16\
          &in_Domain={POLAND_AREA}\
          &periodStart={period_start}0000&periodEnd={period_end}0000"
     );
 
-    let text = fetch_xml(client, &url, &format!("A75-backfill-{period_start}")).await?;
-    parse_hourly_generation_xml(&text)
+    let text = fetch_xml(client, &url, &format!("A75-range-{period_start}")).await?;
+    parse_multi_day_generation_xml(&text)
 }
 
-/// Fetch day-ahead prices for a specific date range (for backfill).
-/// `start` and `end` are dates in YYYYMMDD format.
-pub async fn fetch_day_ahead_prices_for_date(
+/// Fetch day-ahead prices for a multi-day range (for backfill).
+/// Returns (date, hour, price) tuples. ENTSO-E supports up to ~1 year per request.
+pub async fn fetch_da_prices_range(
     client: &reqwest::Client,
     token: &str,
     area_code: &str,
     period_start: &str,
     period_end: &str,
-) -> Result<Vec<(u32, f64)>> {
+) -> Result<Vec<(chrono::NaiveDate, u32, f64)>> {
     let url = format!(
         "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A44&processType=A01\
          &in_Domain={area_code}&out_Domain={area_code}\
          &periodStart={period_start}0000&periodEnd={period_end}0000"
     );
 
-    let text = fetch_xml(client, &url, &format!("A44-backfill-{period_start}")).await?;
-    parse_da_prices_xml(&text)
+    let text = fetch_xml(client, &url, &format!("A44-range-{period_start}-{period_end}")).await?;
+    parse_multi_day_da_prices_xml(&text)
 }
 
 /// Get the average DA price from hourly data
@@ -704,6 +704,141 @@ pub fn round2(v: f64) -> f64 {
 
 fn round3(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
+}
+
+/// Parse multi-day A44 DA price XML. Each TimeSeries/Period has a <timeInterval><start>
+/// tag giving the day. Returns (date, hour, price).
+fn parse_multi_day_da_prices_xml(xml: &str) -> Result<Vec<(chrono::NaiveDate, u32, f64)>> {
+    use chrono::NaiveDate;
+
+    let mut reader = Reader::from_str(xml);
+    let mut results: Vec<(NaiveDate, u32, f64)> = Vec::new();
+    let mut current_period_date: Option<NaiveDate> = None;
+    let mut current_position: Option<u32> = None;
+    let mut in_start = false;
+    let mut in_position = false;
+    let mut in_price_amount = false;
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                match name.as_str() {
+                    "start" => in_start = true,
+                    "position" => in_position = true,
+                    "price.amount" => in_price_amount = true,
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(e)) => {
+                let text = e.unescape().unwrap_or_default().to_string();
+                if in_start {
+                    // Format: 2025-01-01T23:00Z or 2025-01-02T00:00Z
+                    if let Some(date_str) = text.get(..10) {
+                        if let Ok(d) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                            current_period_date = Some(d);
+                        }
+                    }
+                    in_start = false;
+                } else if in_position {
+                    current_position = text.parse().ok();
+                    in_position = false;
+                } else if in_price_amount {
+                    if let (Some(date), Some(pos), Ok(price)) =
+                        (current_period_date, current_position, text.parse::<f64>())
+                    {
+                        let hour = pos.saturating_sub(1);
+                        if hour < 24 {
+                            results.push((date, hour, round2(price)));
+                        }
+                    }
+                    in_price_amount = false;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    anyhow::ensure!(!results.is_empty(), "No DA price data found in multi-day XML");
+    tracing::info!("Parsed {} DA price points from multi-day range", results.len());
+    Ok(results)
+}
+
+/// Parse multi-day A75 generation XML. Returns (date, hour, psr_type, value_mw).
+fn parse_multi_day_generation_xml(xml: &str) -> Result<Vec<(chrono::NaiveDate, u32, String, f64)>> {
+    use chrono::NaiveDate;
+
+    let mut reader = Reader::from_str(xml);
+    let mut results: Vec<(NaiveDate, u32, String, f64)> = Vec::new();
+    let mut current_psr: Option<String> = None;
+    let mut current_period_date: Option<NaiveDate> = None;
+    let mut current_position: Option<u32> = None;
+    let mut in_psr_type = false;
+    let mut in_start = false;
+    let mut in_position = false;
+    let mut in_quantity = false;
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                match name.as_str() {
+                    "psrType" => in_psr_type = true,
+                    "start" => in_start = true,
+                    "position" => in_position = true,
+                    "quantity" => in_quantity = true,
+                    _ => {}
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if name == "TimeSeries" {
+                    current_psr = None;
+                }
+            }
+            Ok(Event::Text(e)) => {
+                let text = e.unescape().unwrap_or_default().to_string();
+                if in_psr_type {
+                    current_psr = Some(text);
+                    in_psr_type = false;
+                } else if in_start {
+                    if let Some(date_str) = text.get(..10) {
+                        if let Ok(d) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                            current_period_date = Some(d);
+                        }
+                    }
+                    in_start = false;
+                } else if in_position {
+                    current_position = text.parse().ok();
+                    in_position = false;
+                } else if in_quantity {
+                    if let (Some(psr), Some(date), Some(pos), Ok(qty)) =
+                        (&current_psr, current_period_date, current_position, text.parse::<f64>())
+                    {
+                        // PT15M: 4 intervals per hour
+                        let hour = (pos.saturating_sub(1)) / 4;
+                        if hour < 24 {
+                            results.push((date, hour, psr.clone(), qty));
+                        }
+                    }
+                    in_quantity = false;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    anyhow::ensure!(!results.is_empty(), "No generation data found in multi-day XML");
+    tracing::info!("Parsed {} generation points from multi-day range", results.len());
+    Ok(results)
 }
 
 #[cfg(test)]
