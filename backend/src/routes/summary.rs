@@ -422,10 +422,6 @@ async fn build_retrospective_text(
         .cache
         .get("residual")
         .or_else(|| state.cache.get_stale("residual"));
-    let curtailment_data = state
-        .cache
-        .get("pse_curtailment")
-        .or_else(|| state.cache.get_stale("pse_curtailment"));
     let reserves_data = state
         .cache
         .get("pse_reserves")
@@ -434,9 +430,49 @@ async fn build_retrospective_text(
     let f = &fuel;
     let s = &spread;
 
+    // Query actual RDN DA price from DB instead of approximating from TTF
+    let (rdn_pln, rdn_prev_pln) = if let Some(ref pool) = state.db {
+        let current: Option<(f64,)> = sqlx::query_as(
+            "SELECT AVG(cen_pln) FROM price_hourly
+             WHERE source = 'PSE' AND product = 'DA' AND cen_pln IS NOT NULL
+               AND ts >= NOW() - INTERVAL '7 days'"
+        ).fetch_optional(pool).await.ok().flatten();
+        let prev: Option<(f64,)> = sqlx::query_as(
+            "SELECT AVG(cen_pln) FROM price_hourly
+             WHERE source = 'PSE' AND product = 'DA' AND cen_pln IS NOT NULL
+               AND ts >= NOW() - INTERVAL '37 days'
+               AND ts < NOW() - INTERVAL '7 days'"
+        ).fetch_optional(pool).await.ok().flatten();
+        (current.map(|r| r.0).unwrap_or(0.0), prev.map(|r| r.0).unwrap_or(0.0))
+    } else {
+        (0.0, 0.0)
+    };
+    let rdn_change_pct = if rdn_prev_pln > 0.0 {
+        ((rdn_pln - rdn_prev_pln) / rdn_prev_pln) * 100.0
+    } else {
+        0.0
+    };
+
+    // Query actual YTD curtailment from DB instead of relying on cache
+    let (ytd_total, ytd_wind, ytd_solar, ytd_network, ytd_balance) = if let Some(ref pool) = state.db {
+        let row: Option<(f64, f64, f64, f64, f64)> = sqlx::query_as(
+            r#"SELECT
+                SUM(wi_balance_mw + wi_network_mw + pv_balance_mw + pv_network_mw) * 0.25 / 1000.0,
+                SUM(wi_balance_mw + wi_network_mw) * 0.25 / 1000.0,
+                SUM(pv_balance_mw + pv_network_mw) * 0.25 / 1000.0,
+                SUM(wi_network_mw + pv_network_mw) * 0.25 / 1000.0,
+                SUM(wi_balance_mw + pv_balance_mw) * 0.25 / 1000.0
+            FROM curtailment_15min
+            WHERE ts >= date_trunc('year', NOW())"#
+        ).fetch_optional(pool).await.ok().flatten();
+        row.unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0))
+    } else {
+        (0.0, 0.0, 0.0, 0.0, 0.0)
+    };
+
     let input = RetrospectiveInput {
-        rdn_pln_mwh: f.ttf_eur_mwh * 4.3 * 1.12, // approximate RDN from TTF
-        rdn_change_pct: f.ttf_change_pct,
+        rdn_pln_mwh: rdn_pln,
+        rdn_change_pct,
         ttf_eur_mwh: f.ttf_eur_mwh,
         ttf_change_pct: f.ttf_change_pct,
         ara_usd_tonne: f.ara_usd_tonne,
@@ -462,26 +498,11 @@ async fn build_retrospective_text(
             .as_ref()
             .and_then(|d| d.data["cri_level"].as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "LOW".to_string()),
-        ytd_total_gwh: curtailment_data
-            .as_ref()
-            .and_then(|d| d.data["ytd_total_gwh"].as_f64())
-            .unwrap_or(0.0),
-        ytd_wind_gwh: curtailment_data
-            .as_ref()
-            .and_then(|d| d.data["ytd_wind_gwh"].as_f64())
-            .unwrap_or(0.0),
-        ytd_solar_gwh: curtailment_data
-            .as_ref()
-            .and_then(|d| d.data["ytd_solar_gwh"].as_f64())
-            .unwrap_or(0.0),
-        ytd_network_gwh: curtailment_data
-            .as_ref()
-            .and_then(|d| d.data["ytd_network_gwh"].as_f64())
-            .unwrap_or(0.0),
-        ytd_balance_gwh: curtailment_data
-            .as_ref()
-            .and_then(|d| d.data["ytd_balance_gwh"].as_f64())
-            .unwrap_or(0.0),
+        ytd_total_gwh: ytd_total,
+        ytd_wind_gwh: ytd_wind,
+        ytd_solar_gwh: ytd_solar,
+        ytd_network_gwh: ytd_network,
+        ytd_balance_gwh: ytd_balance,
         afrr_g_pln_mw: reserves_data
             .as_ref()
             .and_then(|d| d.data["prices"]["afrr_g_pln_mw"].as_f64())
