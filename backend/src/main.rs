@@ -263,6 +263,86 @@ async fn main() {
         });
     }
 
+    // ENTSO-E generation scheduler — fires at 07:00 UTC daily
+    // A75 actual generation for yesterday is typically available by 06:00 UTC
+    {
+        let sched_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                let now = chrono::Utc::now();
+                let target = now
+                    .date_naive()
+                    .and_hms_opt(7, 0, 0)
+                    .unwrap()
+                    .and_utc();
+                let next_run = if now < target {
+                    target
+                } else {
+                    (now.date_naive() + chrono::Duration::days(1))
+                        .and_hms_opt(7, 0, 0)
+                        .unwrap()
+                        .and_utc()
+                };
+
+                let secs = (next_run - now).num_seconds().max(0) as u64;
+                tracing::info!(
+                    "Generation scheduler: sleeping {}s until {}",
+                    secs,
+                    next_run.format("%Y-%m-%d %H:%M UTC")
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(secs)).await;
+
+                let token = match &sched_state.config.entsoe_token {
+                    Some(t) if !t.is_empty() => t.clone(),
+                    _ => {
+                        tracing::warn!("Generation scheduler: ENTSOE_TOKEN not set, skipping");
+                        continue;
+                    }
+                };
+
+                if let Some(ref pool) = sched_state.db {
+                    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+                    match fetchers::entsoe::fetch_hourly_generation(
+                        &sched_state.http_client,
+                        &token,
+                    )
+                    .await
+                    {
+                        Err(e) => tracing::error!("Generation scheduler: {}", e),
+                        Ok(hourly_gen) => {
+                            let mut batch: Vec<(chrono::DateTime<chrono::Utc>, &str, f64, bool, &str)> = Vec::new();
+                            for (hour, gen) in &hourly_gen {
+                                let ts = yesterday.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
+                                for (source_type, value_mw) in [
+                                    ("WIND", gen.wind_mw()),
+                                    ("PV", gen.solar_mw()),
+                                    ("LIGNITE", gen.lignite_mw()),
+                                    ("HARD_COAL", gen.hard_coal_mw()),
+                                    ("GAS", gen.gas_mw()),
+                                ] {
+                                    if value_mw > 0.0 {
+                                        batch.push((ts, source_type, value_mw, false, "ENTSO_E"));
+                                    }
+                                }
+                            }
+                            match db::writer::write_generation_batch(pool, &batch).await {
+                                Ok(n) => tracing::info!(
+                                    "Generation scheduler: {} rows written for {}",
+                                    n, yesterday
+                                ),
+                                Err(e) => tracing::error!(
+                                    "Generation scheduler: batch write failed: {}", e
+                                ),
+                            }
+                            sched_state.cache.invalidate("generation");
+                            sched_state.cache.invalidate("residual");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let app = Router::new()
         .route("/health", get(routes::health::handler))
         .route("/api/fuels", get(routes::fuels::handler))
@@ -282,6 +362,7 @@ async fn main() {
         .route("/api/history/curtailment", get(routes::history::curtailment_handler))
         .route("/api/history/reserves", get(routes::history::reserves_handler))
         .route("/api/history/prices", get(routes::history::prices_handler))
+        .route("/api/history/generation", get(routes::history::generation_handler))
         .route("/admin/backfill", get(routes::admin::handler))
         .route("/admin/refresh", post(routes::admin::refresh_handler))
         .layer(cors)

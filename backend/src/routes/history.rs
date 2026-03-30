@@ -14,6 +14,7 @@ pub struct HistoryParams {
     pub ticker: Option<String>,
     pub source: Option<String>,
     pub product: Option<String>,
+    pub source_type: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub resolution: Option<String>,
@@ -464,6 +465,125 @@ pub async fn prices_handler(
             "source": "TimescaleDB",
         })),
     )
+}
+
+// ──────────────────────── /api/history/generation ────────────────────────
+
+pub async fn generation_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HistoryParams>,
+) -> (HeaderMap, Json<Value>) {
+    let resolution = params.resolution.as_deref().unwrap_or("hourly");
+    let bucket = resolution_to_bucket(resolution);
+    let from = params.from.as_deref().unwrap_or("2026-01-01");
+    let to = params
+        .to
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| Utc::now().date_naive().to_string());
+    let source_type_filter = params.source_type.as_deref();
+
+    let pool = match &state.db {
+        Some(p) => p,
+        None => return (headers_cached(), Json(empty_history("generation", resolution, from, &to))),
+    };
+
+    // Whitelist source_type values
+    let valid_types = ["WIND", "PV", "LIGNITE", "HARD_COAL", "GAS"];
+    let filter = source_type_filter.filter(|st| valid_types.contains(st));
+
+    if let Some(st) = filter {
+        // Single source type — return flat points
+        let rows = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, Option<f64>, Option<f64>, Option<f64>)>(
+            r#"SELECT
+                   time_bucket($1::interval, ts) AS bucket,
+                   AVG(value_mw)  AS avg_val,
+                   MIN(value_mw)  AS min_val,
+                   MAX(value_mw)  AS max_val
+               FROM generation_hourly
+               WHERE source_type = $2
+                 AND ts >= $3::date
+                 AND ts <  $4::date + INTERVAL '1 day'
+               GROUP BY bucket
+               ORDER BY bucket ASC"#,
+        )
+        .bind(bucket)
+        .bind(st)
+        .bind(from)
+        .bind(to.as_str())
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let points: Vec<Value> = rows
+            .iter()
+            .map(|(ts, avg, min, max)| {
+                json!({
+                    "ts": ts.map(|t| t.to_rfc3339()),
+                    "avg": avg.map(round2),
+                    "min": min.map(round2),
+                    "max": max.map(round2),
+                })
+            })
+            .collect();
+
+        let count = points.len();
+        (
+            headers_cached(),
+            Json(json!({
+                "ticker": st,
+                "resolution": resolution,
+                "from": from,
+                "to": to,
+                "points": points,
+                "point_count": count,
+                "source": "TimescaleDB",
+            })),
+        )
+    } else {
+        // All source types — return series per type
+        let rows = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, String, Option<f64>)>(
+            r#"SELECT
+                   time_bucket($1::interval, ts) AS bucket,
+                   source_type,
+                   AVG(value_mw) AS avg_val
+               FROM generation_hourly
+               WHERE ts >= $2::date
+                 AND ts <  $3::date + INTERVAL '1 day'
+               GROUP BY bucket, source_type
+               ORDER BY bucket ASC, source_type ASC"#,
+        )
+        .bind(bucket)
+        .bind(from)
+        .bind(to.as_str())
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        // Pivot into series per source_type
+        let mut series: std::collections::BTreeMap<String, Vec<Value>> =
+            std::collections::BTreeMap::new();
+        for (ts, source_type, avg) in &rows {
+            series.entry(source_type.clone()).or_default().push(json!({
+                "ts": ts.map(|t| t.to_rfc3339()),
+                "value": avg.map(round2),
+            }));
+        }
+
+        let count = rows.len();
+        (
+            headers_cached(),
+            Json(json!({
+                "ticker": "generation",
+                "resolution": resolution,
+                "from": from,
+                "to": to,
+                "point_count": count,
+                "series": series,
+                "source": "TimescaleDB",
+            })),
+        )
+    }
 }
 
 #[cfg(test)]

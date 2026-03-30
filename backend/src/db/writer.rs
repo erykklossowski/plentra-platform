@@ -224,7 +224,9 @@ pub async fn write_generation(
         "INSERT INTO generation_hourly
          (ts, source_type, value_mw, is_forecast, data_source)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT DO NOTHING",
+         ON CONFLICT (ts, source_type) DO UPDATE
+             SET value_mw = EXCLUDED.value_mw,
+                 data_source = EXCLUDED.data_source",
     )
     .bind(ts)
     .bind(source_type)
@@ -234,6 +236,36 @@ pub async fn write_generation(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Write a batch of generation records in a single transaction.
+/// Each tuple: (ts, source_type, value_mw, is_forecast, data_source).
+pub async fn write_generation_batch(
+    pool: &PgPool,
+    rows: &[(DateTime<Utc>, &str, f64, bool, &str)],
+) -> anyhow::Result<usize> {
+    let mut tx = pool.begin().await?;
+    let mut count = 0usize;
+    for (ts, source_type, value_mw, is_forecast, data_source) in rows {
+        let result = sqlx::query(
+            "INSERT INTO generation_hourly
+             (ts, source_type, value_mw, is_forecast, data_source)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (ts, source_type) DO UPDATE
+                 SET value_mw = EXCLUDED.value_mw,
+                     data_source = EXCLUDED.data_source",
+        )
+        .bind(ts)
+        .bind(source_type)
+        .bind(value_mw)
+        .bind(is_forecast)
+        .bind(data_source)
+        .execute(&mut *tx)
+        .await?;
+        count += result.rows_affected() as usize;
+    }
+    tx.commit().await?;
+    Ok(count)
 }
 
 /// Upsert a single OHLCV bar into fuel_ohlcv.

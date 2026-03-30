@@ -58,7 +58,21 @@ async fn check_data_integrity(pool: &PgPool) {
                 if count == 0 {
                     tracing::info!("DATA INTEGRITY: {} is EMPTY — {}", table, hint);
                 } else {
-                    tracing::info!("DATA INTEGRITY: {} has {} rows", table, count);
+                    // Also log date range for populated backfill tables
+                    let range_query = format!(
+                        "SELECT MIN(ts)::text, MAX(ts)::text FROM {}",
+                        table
+                    );
+                    let range: Option<(Option<String>, Option<String>)> =
+                        sqlx::query_as(&range_query).fetch_optional(pool).await.ok().flatten();
+                    if let Some((Some(min_ts), Some(max_ts))) = range {
+                        tracing::info!(
+                            "DATA INTEGRITY: {} has {} rows ({} → {})",
+                            table, count, min_ts, max_ts
+                        );
+                    } else {
+                        tracing::info!("DATA INTEGRITY: {} has {} rows", table, count);
+                    }
                 }
             }
             Err(e) => {

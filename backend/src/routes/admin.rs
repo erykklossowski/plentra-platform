@@ -567,6 +567,7 @@ async fn backfill_entso_generation(
     days: i64,
 ) -> anyhow::Result<usize> {
     use crate::fetchers::entsoe;
+    use std::collections::HashMap;
 
     fn psr_to_source_type(psr: &str) -> Option<&'static str> {
         match psr {
@@ -588,20 +589,27 @@ async fn backfill_entso_generation(
 
         match entsoe::fetch_hourly_generation_for_range(client, token, start, end).await {
             Ok(records) => {
+                // Aggregate by (date, hour, source_type) to sum B18+B19 → WIND
+                let mut agg: HashMap<(chrono::NaiveDate, u32, &str), f64> = HashMap::new();
                 for (date, hour, psr, value) in &records {
                     if let Some(source_type) = psr_to_source_type(psr) {
-                        let ts = date.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
-                        if crate::db::writer::write_generation(
-                            pool, ts, source_type, *value, false, "ENTSO_E",
-                        )
-                        .await
-                        .is_ok()
-                        {
-                            total += 1;
-                        }
+                        *agg.entry((*date, *hour, source_type)).or_default() += value;
                     }
                 }
-                tracing::info!("ENTSO-E gen chunk {}: {} raw points, {} written so far", i + 1, records.len(), total);
+
+                let batch: Vec<_> = agg
+                    .iter()
+                    .map(|((date, hour, source_type), value)| {
+                        let ts = date.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
+                        (ts, *source_type, *value, false, "ENTSO_E")
+                    })
+                    .collect();
+
+                match crate::db::writer::write_generation_batch(pool, &batch).await {
+                    Ok(n) => total += n,
+                    Err(e) => tracing::warn!("ENTSO-E gen batch write failed: {}", e),
+                }
+                tracing::info!("ENTSO-E gen chunk {}: {} raw points, {} aggregated, {} written so far", i + 1, records.len(), batch.len(), total);
             }
             Err(e) => {
                 tracing::warn!("ENTSO-E gen chunk {} failed: {}", i + 1, e);
