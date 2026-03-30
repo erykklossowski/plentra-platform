@@ -433,13 +433,13 @@ async fn build_retrospective_text(
     // Query actual RDN DA price from DB instead of approximating from TTF
     let (rdn_pln, rdn_prev_pln) = if let Some(ref pool) = state.db {
         let current: Option<(f64,)> = sqlx::query_as(
-            "SELECT AVG(cen_pln) FROM price_hourly
-             WHERE source = 'PSE' AND product = 'DA' AND cen_pln IS NOT NULL
+            "SELECT AVG(csdac_pln) FROM price_hourly
+             WHERE source = 'PSE' AND product = 'DA' AND csdac_pln IS NOT NULL
                AND ts >= NOW() - INTERVAL '7 days'"
         ).fetch_optional(pool).await.ok().flatten();
         let prev: Option<(f64,)> = sqlx::query_as(
-            "SELECT AVG(cen_pln) FROM price_hourly
-             WHERE source = 'PSE' AND product = 'DA' AND cen_pln IS NOT NULL
+            "SELECT AVG(csdac_pln) FROM price_hourly
+             WHERE source = 'PSE' AND product = 'DA' AND csdac_pln IS NOT NULL
                AND ts >= NOW() - INTERVAL '37 days'
                AND ts < NOW() - INTERVAL '7 days'"
         ).fetch_optional(pool).await.ok().flatten();
