@@ -271,10 +271,56 @@ pub async fn handler(
             });
             Json(json!({ "status": "recalculation started", "days": days })).into_response()
         }
+        "ohlcv_status" => {
+            // Diagnostic: show what's in fuel_ohlcv table
+            let rows = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>)>(
+                r#"
+                SELECT ticker, COUNT(*) as cnt,
+                       MIN(date)::text, MAX(date)::text
+                FROM fuel_ohlcv
+                GROUP BY ticker ORDER BY ticker
+                "#,
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+            let summary: Vec<serde_json::Value> = rows.iter().map(|(ticker, cnt, min_d, max_d)| {
+                json!({
+                    "ticker": ticker,
+                    "rows": cnt,
+                    "min_date": min_d,
+                    "max_date": max_d,
+                })
+            }).collect();
+
+            // Sample raw_symbols
+            let samples = sqlx::query_as::<_, (String, String, f64)>(
+                r#"
+                SELECT DISTINCT ON (ticker) ticker, raw_symbol, close
+                FROM fuel_ohlcv
+                ORDER BY ticker, date DESC
+                "#,
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+            let sample_list: Vec<serde_json::Value> = samples.iter().map(|(t, sym, price)| {
+                json!({"ticker": t, "raw_symbol": sym, "close": price})
+            }).collect();
+
+            Json(json!({
+                "status": "done",
+                "summary": summary,
+                "latest_samples": sample_list,
+            }))
+            .into_response()
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, databento_debug, databento_ohlcv, recalculate_spreads, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, databento_debug, databento_ohlcv, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
             )
                 .into_response()
         }

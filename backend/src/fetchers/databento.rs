@@ -18,50 +18,37 @@ use crate::db::models::FuelOhlcv;
 #[derive(Debug, Clone, Copy)]
 pub struct Instrument {
     pub name: &'static str,
-    pub dataset: &'static str,
+    pub dataset: Dataset,
     pub symbol: &'static str,
     pub unit: &'static str,
-    pub settlement_stat_type: u16,
-    pub price_min: f64,
-    pub price_max: f64,
 }
+
+use databento::dbn::Dataset;
 
 pub const INSTRUMENTS: &[Instrument] = &[
     Instrument {
-        name: "TTF",
-        dataset: "IFEU.IMPACT",
-        symbol: "TFM.FUT",
-        unit: "EUR/MWh",
-        settlement_stat_type: 1, // SettlementPrice — same for all ICE instruments
-        price_min: 5.0,
-        price_max: 300.0,
+        name:    "TTF",
+        dataset: Dataset::NdexImpact,  // FIXED: ICE Endex
+        symbol:  "TFM.FUT",            // FIXED: TFM is the EUR/MWh contract (TFU is USD/MMBtu)
+        unit:    "EUR/MWh",
     },
     Instrument {
-        name: "EUA",
-        dataset: "IFEU.IMPACT",
-        symbol: "ECF.FUT",
-        unit: "EUR/t",
-        settlement_stat_type: 1, // confirmed: SettlementPrice
-        price_min: 5.0,
-        price_max: 200.0,
+        name:    "EUA",
+        dataset: Dataset::NdexImpact,  // CORRECT: ICE Endex
+        symbol:  "ECF.FUT",            // CORRECT: ECF is the EUA Future
+        unit:    "EUR/t",
     },
     Instrument {
-        name: "ARA",
-        dataset: "IFEU.IMPACT",
-        symbol: "ATW.FUT",
-        unit: "USD/t",
-        settlement_stat_type: 1, // confirmed: SettlementPrice
-        price_min: 30.0,
-        price_max: 500.0,
+        name:    "ARA",
+        dataset: Dataset::IfeuImpact,  // CORRECT: ICE Europe Commodities
+        symbol:  "ATW.FUT",            // CORRECT: API2 Rotterdam Coal
+        unit:    "USD/t",
     },
     Instrument {
-        name: "GAB",
-        dataset: "IFEU.IMPACT",
-        symbol: "GAB.FUT",
-        unit: "EUR/MWh",
-        settlement_stat_type: 1,
-        price_min: 0.0,
-        price_max: 500.0,
+        name:    "GAB",
+        dataset: Dataset::NdexImpact,  // FIXED: ICE Endex
+        symbol:  "GAB.FUT",            // CORRECT: German Power Base
+        unit:    "EUR/MWh",
     },
 ];
 
@@ -166,19 +153,14 @@ pub async fn fetch_history(
         while let Some(msg) = decoder.decode_record::<StatMsg>().await.map_err(|e| {
             anyhow::anyhow!("Databento decode error for {}: {}", instrument.name, e)
         })? {
-            if msg.stat_type != instrument.settlement_stat_type {
+            // stat_type=1 is SettlementPrice for all ICE instruments
+            if msg.stat_type != 1 {
                 continue;
             }
 
             let price = msg.price_f64();
 
-            if price.is_nan() {
-                continue;
-            }
-
-            // Skip prices outside bounds silently — SType::Parent returns many
-            // contracts (expired/far-out) with price=0.0, this is normal behavior
-            if price < instrument.price_min || price > instrument.price_max {
+            if price.is_nan() || price <= 0.0 {
                 continue;
             }
 
@@ -193,10 +175,9 @@ pub async fn fetch_history(
         }
 
         tracing::info!(
-            "Databento {}: {} valid settlement records (stat_type={})",
+            "Databento {}: {} valid settlement records (stat_type=1)",
             instrument.name,
-            count,
-            instrument.settlement_stat_type
+            count
         );
     }
 
@@ -263,14 +244,12 @@ pub async fn fetch_today(
         };
 
         while let Ok(Some(msg)) = decoder.decode_record::<StatMsg>().await {
-            if msg.stat_type != instrument.settlement_stat_type {
+            // stat_type=1 is SettlementPrice for all ICE instruments
+            if msg.stat_type != 1 {
                 continue;
             }
             let price = msg.price_f64();
-            if price.is_nan()
-                || price < instrument.price_min
-                || price > instrument.price_max
-            {
+            if price.is_nan() || price <= 0.0 {
                 continue;
             }
             tracing::info!(
@@ -415,11 +394,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_price_bounds() {
-        let ttf = &INSTRUMENTS[0];
-        assert!(54.53 >= ttf.price_min && 54.53 <= ttf.price_max);
-        let ara = &INSTRUMENTS[2];
-        assert!(130.90 >= ara.price_min && 130.90 <= ara.price_max);
+    fn test_instrument_datasets() {
+        assert_eq!(INSTRUMENTS[0].name, "TTF");
+        assert!(matches!(INSTRUMENTS[0].dataset, Dataset::NdexImpact));
+        assert_eq!(INSTRUMENTS[2].name, "ARA");
+        assert!(matches!(INSTRUMENTS[2].dataset, Dataset::IfeuImpact));
     }
 
     #[test]
