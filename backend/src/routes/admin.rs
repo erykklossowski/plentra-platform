@@ -325,28 +325,28 @@ pub async fn handler(
         "sync_fuel_daily" => {
             // Populate fuel_daily from fuel_ohlcv close prices.
             // Takes the front-month contract close per (date, ticker).
-            let result = sqlx::query_scalar::<_, i64>(
+            let result = sqlx::query(
                 r#"
-                WITH front_month AS (
-                    SELECT DISTINCT ON (date, ticker)
-                        date, ticker, close, unit
-                    FROM fuel_ohlcv
-                    WHERE close > 0 AND close < 1000000
-                    ORDER BY date, ticker, raw_symbol ASC
-                )
                 INSERT INTO fuel_daily (ts, ticker, close, unit, source)
-                SELECT (date::timestamp AT TIME ZONE 'UTC' + INTERVAL '17 hours 30 minutes')
-                           AT TIME ZONE 'UTC',
-                       ticker, close, unit, 'DATABENTO'
-                FROM front_month
+                SELECT DISTINCT ON (o.date, o.ticker)
+                       (o.date + TIME '17:30:00') AT TIME ZONE 'UTC',
+                       o.ticker, o.close, o.unit, 'DATABENTO'
+                FROM fuel_ohlcv o
+                WHERE o.close > 0 AND o.close < 1000000
+                ORDER BY o.date, o.ticker, o.raw_symbol ASC
                 ON CONFLICT DO NOTHING
-                RETURNING 1
                 "#,
             )
-            .fetch_all(&pool)
+            .execute(&pool)
             .await;
 
-            let written = result.map(|r| r.len()).unwrap_or(0);
+            let written = match &result {
+                Ok(r) => r.rows_affected() as usize,
+                Err(e) => {
+                    tracing::error!("sync_fuel_daily failed: {}", e);
+                    return Json(json!({"status": "error", "error": format!("{}", e)})).into_response();
+                }
+            };
 
             // Invalidate caches so forecast/fuels regenerate
             state.cache.invalidate("forecast");
