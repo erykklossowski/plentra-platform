@@ -131,7 +131,13 @@ pub async fn handler(
                 historical::timeseries::GetRangeParams,
                 HistoricalClient,
             };
-            let symbols = [("TTF", "TFU.FUT"), ("EUA", "ECF.FUT"), ("ARA", "ATW.FUT")];
+            let symbols = [
+                ("TTF", "TFU.FUT"),
+                ("EUA_ECF", "ECF.FUT"),
+                ("EUA_CKM", "CKM.FUT"),
+                ("EUA_CFI", "CFI.FUT"),
+                ("ARA", "ATW.FUT"),
+            ];
             let mut results = serde_json::Map::new();
 
             for (name, symbol) in &symbols {
