@@ -188,7 +188,7 @@ export default async function SummaryPage() {
           },
         ]}
         showZeroLine
-        defaultDays={30}
+        defaultDays={365}
       />
 
       {/* Industrial Spread Monitor */}

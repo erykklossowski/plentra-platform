@@ -322,10 +322,48 @@ pub async fn handler(
             }))
             .into_response()
         }
+        "sync_fuel_daily" => {
+            // Populate fuel_daily from fuel_ohlcv close prices.
+            // Takes the front-month contract close per (date, ticker).
+            let result = sqlx::query_scalar::<_, i64>(
+                r#"
+                WITH front_month AS (
+                    SELECT DISTINCT ON (date, ticker)
+                        date, ticker, close, unit
+                    FROM fuel_ohlcv
+                    WHERE close > 0 AND close < 1000000
+                    ORDER BY date, ticker, raw_symbol ASC
+                )
+                INSERT INTO fuel_daily (ts, ticker, close, unit, source)
+                SELECT (date::timestamp AT TIME ZONE 'UTC' + INTERVAL '17 hours 30 minutes')
+                           AT TIME ZONE 'UTC',
+                       ticker, close, unit, 'DATABENTO'
+                FROM front_month
+                ON CONFLICT DO NOTHING
+                RETURNING 1
+                "#,
+            )
+            .fetch_all(&pool)
+            .await;
+
+            let written = result.map(|r| r.len()).unwrap_or(0);
+
+            // Invalidate caches so forecast/fuels regenerate
+            state.cache.invalidate("forecast");
+            state.cache.invalidate("fuels");
+            state.cache.invalidate("summary");
+
+            Json(json!({
+                "status": "done",
+                "rows_written": written,
+                "note": "fuel_daily populated from fuel_ohlcv front-month closes"
+            }))
+            .into_response()
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, databento_debug, databento_ohlcv, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, sync_fuel_daily, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
             )
                 .into_response()
         }
