@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod analytics;
 pub mod crossborder;
 pub mod curtailment;
 pub mod europe;

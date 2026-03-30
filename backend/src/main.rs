@@ -363,6 +363,8 @@ async fn main() {
         .route("/api/history/reserves", get(routes::history::reserves_handler))
         .route("/api/history/prices", get(routes::history::prices_handler))
         .route("/api/history/generation", get(routes::history::generation_handler))
+        .route("/api/analytics/spreads", get(routes::analytics::get_spread_analytics))
+        .route("/api/analytics/evening", get(routes::analytics::get_evening_decomposition))
         .route("/admin/backfill", get(routes::admin::handler))
         .route("/admin/refresh", post(routes::admin::refresh_handler))
         .layer(cors)
