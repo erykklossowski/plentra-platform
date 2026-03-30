@@ -339,14 +339,9 @@ pub async fn fetch_ohlcv(
             let low = msg.low as f64 / 1_000_000_000.0;
             let close = msg.close as f64 / 1_000_000_000.0;
 
-            // Sanity check — reject obviously wrong prices
-            if close <= 0.0 {
-                tracing::debug!(
-                    "Skipping zero/negative close for {} {} on {}",
-                    instrument_def.name,
-                    raw_symbol,
-                    date
-                );
+            // Sanity check — reject sentinel and obviously wrong prices.
+            // Databento UNDEF_PRICE = i64::MAX → ~9.22e9 after /1e9 division.
+            if close <= 0.0 || close > 1_000_000.0 {
                 continue;
             }
 
