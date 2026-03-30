@@ -91,9 +91,13 @@ function SpreadAnalyticsSection({ data }: { data: SpreadsAnalyticsResponse | nul
           positive={latestCds ? latestCds.value > 0 : null}
         />
         <KpiCard
-          label="% dni CSS > 0"
+          label="CCGT rentowny (CSS > 0)"
           value={recentPositive?.positive_pct}
-          sub={recentPositive ? `${recentPositive.positive_days}/${recentPositive.total_days} dni` : undefined}
+          sub={recentPositive
+            ? recentPositive.positive_pct === 0
+              ? `CCGT poza merit order — 0/${recentPositive.total_days} dni`
+              : `${recentPositive.positive_days}/${recentPositive.total_days} dni`
+            : undefined}
           unit="%"
           positive={recentPositive ? recentPositive.positive_pct >= 50 : null}
         />

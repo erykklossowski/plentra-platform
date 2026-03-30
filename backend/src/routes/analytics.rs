@@ -273,8 +273,10 @@ pub async fn get_evening_decomposition(
         let base = baseline.unwrap_or(evening);
 
         // delta_fuel: CSS contribution (EUR → PLN, apply pass-through)
+        // Floor at zero: fuel costs always add to price, never subtract.
+        // When CSS is negative, CCGT is uncompetitive — effect goes into residual.
         let delta_fuel = css_eur
-            .map(|css| css * EUR_PLN_RATE * PASS_THROUGH)
+            .map(|css| (css * EUR_PLN_RATE * PASS_THROUGH).max(0.0))
             .unwrap_or(0.0);
 
         // delta_oze: normalized duck curve × scale factor
