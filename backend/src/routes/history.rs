@@ -83,7 +83,6 @@ pub async fn fuels_handler(
           AND date <= $3::date
           AND close > 0
           AND close < 1000000
-          AND volume > 0
         ORDER BY date ASC, volume DESC
         "#,
     )

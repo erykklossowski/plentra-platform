@@ -59,7 +59,6 @@ pub async fn get_fuel_sparkline(
             WHERE ticker = $1
               AND date >= CURRENT_DATE - make_interval(days => $2)
               AND close > 0 AND close < 1000000
-              AND volume > 0
             ORDER BY date ASC, volume DESC
         ) sub
         ORDER BY date ASC
