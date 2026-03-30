@@ -9,6 +9,9 @@ import type {
   CurtailmentResponse,
   ReservesResponse,
   ForecastResponse,
+  SpreadsAnalyticsResponse,
+  EveningAnalyticsResponse,
+  PsePricesResponse,
 } from "@/types/api";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080").trim();
@@ -31,3 +34,11 @@ export const getEurope = () => apiFetch<EuropeResponse>("/api/europe");
 export const getCurtailment = () => apiFetch<CurtailmentResponse>("/api/curtailment");
 export const getReserves = () => apiFetch<ReservesResponse>("/api/reserves");
 export const getForecast = () => apiFetch<ForecastResponse>("/api/forecast", 3600);
+export const getSpreadsAnalytics = () => apiFetch<SpreadsAnalyticsResponse>("/api/analytics/spreads");
+export const getEveningAnalytics = () => apiFetch<EveningAnalyticsResponse>("/api/analytics/evening");
+
+export function getPsePrices(days = 30) {
+  const to = new Date().toISOString().split("T")[0];
+  const from = new Date(Date.now() - days * 86400_000).toISOString().split("T")[0];
+  return apiFetch<PsePricesResponse>(`/api/history/prices?from=${from}&to=${to}`, 300);
+}

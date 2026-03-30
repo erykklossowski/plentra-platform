@@ -284,6 +284,86 @@ export interface ResidualResponse extends DataStatusFields {
   stale?: boolean;
 }
 
+// ─── Analytics (Prompt B) ───
+
+export interface SpreadHistoryPoint {
+  date: string;
+  spread_type: string;
+  value: number;
+  rolling_7d_avg: number | null;
+  rolling_30d_avg: number | null;
+  rolling_30d_stddev: number | null;
+}
+
+export interface SeasonalityPoint {
+  spread_type: string;
+  month: string;
+  min: number | null;
+  q1: number | null;
+  median: number | null;
+  q3: number | null;
+  max: number | null;
+  mean: number | null;
+  n_days: number;
+}
+
+export interface PositiveDaysPoint {
+  month: string;
+  spread_type: string;
+  positive_days: number;
+  total_days: number;
+  positive_pct: number;
+}
+
+export interface SpreadsAnalyticsResponse {
+  generated_at: string;
+  history_90d: SpreadHistoryPoint[];
+  seasonality: SeasonalityPoint[];
+  positive_days: PositiveDaysPoint[];
+}
+
+export interface EveningDecompositionPoint {
+  date: string;
+  evening_avg_pln: number;
+  baseline_pln: number;
+  delta_fuel_pln: number;
+  delta_oze_pln: number;
+  residual_pln: number;
+}
+
+export interface EveningAnalyticsResponse {
+  generated_at: string;
+  days: number;
+  constants: {
+    eur_pln_rate: number;
+    pass_through: number;
+    oze_scale_pln_mwh: number;
+  };
+  summary: {
+    avg_css_contribution_pct: number;
+  };
+  decomposition: EveningDecompositionPoint[];
+}
+
+export interface PsePricePoint {
+  ts: string;
+  value: number | null;
+}
+
+export interface PsePricesResponse {
+  ticker: string;
+  resolution: string;
+  from: string;
+  to: string;
+  point_count: number;
+  series: {
+    cen: PsePricePoint[];
+    ckoeb: PsePricePoint[];
+    sdac: PsePricePoint[];
+  };
+  source: string;
+}
+
 // ─── Forecast (Phase 7) ───
 
 export interface FuelForecastData {
