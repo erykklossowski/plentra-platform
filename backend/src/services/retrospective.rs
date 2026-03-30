@@ -46,9 +46,9 @@ period based on the live data below.
 
 Requirements:
 - Write in English
-- Use specific numbers from the data (do not round excessively)
+- Use ONLY the numbers and facts provided below — do not infer, assume, or add information not present in the data
 - Identify the dominant price driver in the first sentence
-- Mention curtailment if YTD total > 50 GWh
+- Mention curtailment if YTD total > 50 GWh — use the stated cause verbatim, do not substitute with alternative explanations
 - Reference reserve price level if aFRR_G > 150 PLN/MW (elevated)
 - End with exactly one forward-looking sentence about the next 2–4 weeks
 - No headers, no bullet points, no markdown — plain prose only
@@ -65,6 +65,7 @@ Residual demand: {residual:.1} GW (must-run floor: {must_run:.1} GW)
 Curtailment Risk Index: {cri:.1} ({cri_level})
 OZE curtailment YTD: {curtailment_ytd:.1} GWh ({curtailment_cause})
   — wind: {wind_gwh:.1} GWh, solar: {solar_gwh:.1} GWh
+  — by cause: network constraints {network_gwh:.1} GWh, system balancing {balance_gwh:.1} GWh
 aFRR_G capacity price: {afrr_g:.1} PLN/MW
 mFRRd_G capacity price: {mfrrd_g:.1} PLN/MW"#,
         rdn = input.rdn_pln_mwh,
@@ -86,6 +87,8 @@ mFRRd_G capacity price: {mfrrd_g:.1} PLN/MW"#,
         curtailment_cause = curtailment_cause,
         wind_gwh = input.ytd_wind_gwh,
         solar_gwh = input.ytd_solar_gwh,
+        network_gwh = input.ytd_network_gwh,
+        balance_gwh = input.ytd_balance_gwh,
         afrr_g = input.afrr_g_pln_mw,
         mfrrd_g = input.mfrrd_g_pln_mw,
     )
