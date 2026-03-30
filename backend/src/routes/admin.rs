@@ -99,6 +99,31 @@ pub async fn handler(
             }))
             .into_response()
         }
+        "entso_da" => {
+            let entsoe_token = match config.entsoe_token {
+                Some(ref t) if !t.is_empty() => t.clone(),
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": "ENTSOE_TOKEN not set"})),
+                    )
+                        .into_response()
+                }
+            };
+            tokio::spawn(async move {
+                match backfill_entso_da(&client, &entsoe_token, &pool, days).await {
+                    Ok(n) => tracing::info!("ENTSO-E DA backfill: {} rows written", n),
+                    Err(e) => tracing::error!("ENTSO-E DA backfill failed: {}", e),
+                }
+            });
+            Json(json!({
+                "status": "backfill started",
+                "source": "entso_da",
+                "days": days,
+                "note": "ENTSO-E A44 DA prices for Poland → price_hourly (source=ENTSO_E_PL)"
+            }))
+            .into_response()
+        }
         "reserves" => {
             tokio::spawn(async move {
                 match backfill_reserves(&client, &pool, days).await {
@@ -398,7 +423,7 @@ pub async fn handler(
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, sync_fuel_daily, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, entso_da, sync_fuel_daily, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
             )
                 .into_response()
         }
@@ -474,6 +499,67 @@ async fn backfill_curtailment(
 
         // Rate limit: 1 request per second to PSE API
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    }
+
+    Ok(total)
+}
+
+async fn backfill_entso_da(
+    client: &reqwest::Client,
+    token: &str,
+    pool: &PgPool,
+    days: i64,
+) -> anyhow::Result<usize> {
+    use chrono::Duration;
+    use crate::fetchers::entsoe;
+
+    let mut total = 0usize;
+
+    for day_offset in (0..days).rev() {
+        let date = (Utc::now() - Duration::days(day_offset + 1)).date_naive();
+        let next_date = date + Duration::days(1);
+        let period_start = date.format("%Y%m%d").to_string();
+        let period_end = next_date.format("%Y%m%d").to_string();
+
+        match entsoe::fetch_day_ahead_prices_for_date(
+            client,
+            token,
+            "10YPL-AREA-----S",
+            &period_start,
+            &period_end,
+        )
+        .await
+        {
+            Ok(hourly) => {
+                for (hour, price) in &hourly {
+                    let ts = date.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
+                    match crate::db::writer::write_price_hourly(
+                        pool,
+                        ts,
+                        "ENTSO_E_PL",
+                        "DA",
+                        Some(*price),
+                        None,
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(()) => total += 1,
+                        Err(e) => tracing::warn!("DA write failed {} h{}: {}", date, hour, e),
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("ENTSO-E DA fetch failed for {}: {}", date, e);
+            }
+        }
+
+        if day_offset % 10 == 0 {
+            tracing::info!("ENTSO-E DA backfill: {} days remaining, {} rows so far", day_offset, total);
+        }
+
+        // Rate limit: ENTSO-E allows ~400 req/min, but be conservative
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
     Ok(total)

@@ -152,7 +152,49 @@ async fn main() {
                         }
                     }
 
-                    // Daily OHLCV fetch + CSS calculation
+                    // Persist ENTSO-E DA prices for yesterday
+                if let Some(ref entsoe_token) = sched_state.config.entsoe_token {
+                    if !entsoe_token.is_empty() {
+                        match fetchers::entsoe::fetch_day_ahead_prices(
+                            &sched_state.http_client,
+                            entsoe_token,
+                            "10YPL-AREA-----S",
+                        )
+                        .await
+                        {
+                            Ok(hourly) => {
+                                let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+                                    .date_naive();
+                                let mut da_written = 0usize;
+                                for (hour, price) in &hourly {
+                                    let ts = yesterday
+                                        .and_hms_opt(*hour, 0, 0)
+                                        .unwrap()
+                                        .and_utc();
+                                    if db::writer::write_price_hourly(
+                                        pool, ts, "ENTSO_E_PL", "DA",
+                                        Some(*price), None, false,
+                                    )
+                                    .await
+                                    .is_ok()
+                                    {
+                                        da_written += 1;
+                                    }
+                                }
+                                tracing::info!(
+                                    "Fuel scheduler: wrote {} DA price hours for {}",
+                                    da_written,
+                                    yesterday
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("Fuel scheduler: ENTSO-E DA fetch failed: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                // Daily OHLCV fetch + CSS calculation
                     let today = chrono::Utc::now().date_naive();
                     let yesterday = today - chrono::Duration::days(1);
                     match fetchers::databento::fetch_ohlcv_for_css(api_key, yesterday, today).await {

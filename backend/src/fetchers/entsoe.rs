@@ -565,6 +565,25 @@ fn parse_da_prices_xml(xml: &str) -> Result<Vec<(u32, f64)>> {
     Ok(hourly)
 }
 
+/// Fetch day-ahead prices for a specific date range (for backfill).
+/// `start` and `end` are dates in YYYYMMDD format.
+pub async fn fetch_day_ahead_prices_for_date(
+    client: &reqwest::Client,
+    token: &str,
+    area_code: &str,
+    period_start: &str,
+    period_end: &str,
+) -> Result<Vec<(u32, f64)>> {
+    let url = format!(
+        "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A44&processType=A01\
+         &in_Domain={area_code}&out_Domain={area_code}\
+         &periodStart={period_start}0000&periodEnd={period_end}0000"
+    );
+
+    let text = fetch_xml(client, &url, &format!("A44-backfill-{period_start}")).await?;
+    parse_da_prices_xml(&text)
+}
+
 /// Get the average DA price from hourly data
 pub fn average_da_price(hourly: &[(u32, f64)]) -> f64 {
     if hourly.is_empty() {

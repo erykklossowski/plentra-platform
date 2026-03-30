@@ -356,7 +356,7 @@ pub async fn prices_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HistoryParams>,
 ) -> (HeaderMap, Json<Value>) {
-    let source = params.source.as_deref().unwrap_or("TGE_RDN");
+    let source = params.source.as_deref().unwrap_or("ENTSO_E_PL");
     let resolution = params.resolution.as_deref().unwrap_or("daily");
     let bucket = resolution_to_bucket(resolution);
     let from = params.from.as_deref().unwrap_or("2025-01-01");
