@@ -83,7 +83,7 @@ export default function EveningDecompositionChart({
           <Area
             type="monotone"
             dataKey="delta_fuel_pln"
-            name="Paliwa (CSS)"
+            name="Paliwa (CCGT)"
             stackId="a"
             stroke="#f59e0b"
             fill="#f59e0b"
@@ -123,7 +123,7 @@ export default function EveningDecompositionChart({
       {/* Legend */}
       <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
         <LegendItem color="#4a9e9d" label="Baseline" desc="7-dniowa srednia krocząca ceny 17-21h" />
-        <LegendItem color="#f59e0b" label="Paliwa (CSS)" desc="wpływ cen gazu/wegla (pass-through 65%)" />
+        <LegendItem color="#f59e0b" label="Paliwa (CCGT)" desc="koszt zmienny CCGT: gaz/η + CO₂ (pass-through 65%)" />
         <LegendItem color="#22c55e" label="OZE" desc="premia za wypychanie konwencji przez OZE" />
         <LegendItem color="#94a3b8" label="Residual" desc="import, awarie, demand response" />
       </div>

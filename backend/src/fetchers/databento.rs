@@ -160,7 +160,9 @@ pub async fn fetch_history(
 
             let price = msg.price_f64();
 
-            if price.is_nan() || price <= 0.0 {
+            // Filter NaN, non-positive, and Databento's UNDEF_PRICE sentinel
+            // (i64::MAX / 1e9 ≈ 9.22e9 — means "no price defined")
+            if price.is_nan() || price <= 0.0 || price > 1_000_000.0 {
                 continue;
             }
 
@@ -249,7 +251,8 @@ pub async fn fetch_today(
                 continue;
             }
             let price = msg.price_f64();
-            if price.is_nan() || price <= 0.0 {
+            // Filter NaN, non-positive, and UNDEF_PRICE sentinel (~9.22e9)
+            if price.is_nan() || price <= 0.0 || price > 1_000_000.0 {
                 continue;
             }
             tracing::info!(
@@ -304,6 +307,9 @@ pub async fn fetch_ohlcv_symbol(
             continue;
         }
 
+        // Clamp OHLC sentinels: replace UNDEF_PRICE (~9.22e9) with the valid close
+        let clamp = |v: f64| if v > 1_000_000.0 || v <= 0.0 { close } else { v };
+
         bars.push(FuelOhlcv {
             date: ts.date_naive(),
             instrument_id: msg.hd.instrument_id as i64,
@@ -311,9 +317,9 @@ pub async fn fetch_ohlcv_symbol(
             ticker: ticker.clone(),
             raw_symbol: raw_symbol.to_string(),
             unit: unit.clone(),
-            open: msg.open_f64(),
-            high: msg.high_f64(),
-            low: msg.low_f64(),
+            open: clamp(msg.open_f64()),
+            high: clamp(msg.high_f64()),
+            low: clamp(msg.low_f64()),
             close,
             volume: msg.volume as i64,
         });

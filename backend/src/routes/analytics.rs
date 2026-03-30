@@ -204,13 +204,18 @@ pub async fn get_evening_decomposition(
         }
     };
 
+    // CCGT variable cost: fuel_cost = gas/η + carbon × emission_factor/η
+    const ETA_GAS: f64 = 0.50;
+    const EMISSION_FACTOR_GAS: f64 = 0.202; // tCO2/MWh of gas
+
     let rows = sqlx::query_as::<_, (
         chrono::NaiveDate,  // date
         Option<f64>,        // evening_avg_pln
         Option<f64>,        // baseline_pln
-        Option<f64>,        // css_value (EUR)
         Option<f64>,        // oze_mw midday
         Option<f64>,        // oze_30d_avg
+        Option<f64>,        // spot TTF gas (EUR/MWh)
+        Option<f64>,        // spot EUA carbon (EUR/t)
     )>(
         r#"WITH evening_cen AS (
                SELECT
@@ -242,18 +247,30 @@ pub async fn get_evening_decomposition(
                FROM generation_hourly
                WHERE EXTRACT(HOUR FROM ts) BETWEEN 11 AND 14
                GROUP BY ts::date
+           ),
+           spot_fuels AS (
+               SELECT
+                   ts::date AS date,
+                   MAX(close) FILTER (WHERE ticker = 'TTF') AS ttf_eur,
+                   MAX(close) FILTER (WHERE ticker = 'EUA') AS eua_eur
+               FROM fuel_daily
+               GROUP BY ts::date
            )
            SELECT
                b.date,
                b.evening_avg_pln,
                b.baseline_pln,
-               cs.value,
                o.oze_mw,
                AVG(o.oze_mw) OVER (ORDER BY b.date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)
-                   AS oze_30d_avg
+                   AS oze_30d_avg,
+               -- Carry forward last known fuel price across weekends/holidays
+               (SELECT sf2.ttf_eur FROM spot_fuels sf2
+                WHERE sf2.date <= b.date AND sf2.ttf_eur IS NOT NULL
+                ORDER BY sf2.date DESC LIMIT 1) AS ttf_eur,
+               (SELECT sf2.eua_eur FROM spot_fuels sf2
+                WHERE sf2.date <= b.date AND sf2.eua_eur IS NOT NULL
+                ORDER BY sf2.date DESC LIMIT 1) AS eua_eur
            FROM baseline b
-           LEFT JOIN calculated_spreads cs
-               ON cs.date = b.date AND cs.spread_type = 'rolling_3m_css'
            LEFT JOIN oze_midday o
                ON o.date = b.date
            WHERE b.date >= CURRENT_DATE - INTERVAL '90 days'
@@ -268,16 +285,19 @@ pub async fn get_evening_decomposition(
     let mut css_contrib_sum = 0.0f64;
     let mut css_contrib_count = 0usize;
 
-    for (date, evening_avg, baseline, css_eur, oze_mw, oze_30d_avg) in &rows {
+    for (date, evening_avg, baseline, oze_mw, oze_30d_avg, ttf_eur, eua_eur) in &rows {
         let evening = evening_avg.unwrap_or(0.0);
         let base = baseline.unwrap_or(evening);
 
-        // delta_fuel: CSS contribution (EUR → PLN, apply pass-through)
-        // Floor at zero: fuel costs always add to price, never subtract.
-        // When CSS is negative, CCGT is uncompetitive — effect goes into residual.
-        let delta_fuel = css_eur
-            .map(|css| (css * EUR_PLN_RATE * PASS_THROUGH).max(0.0))
-            .unwrap_or(0.0);
+        // delta_fuel: CCGT variable cost (gas/η + carbon×EF/η) → PLN, with pass-through.
+        // This is the marginal fuel cost of gas generation driving evening peak prices.
+        let delta_fuel = match (ttf_eur, eua_eur) {
+            (Some(gas), Some(carbon)) => {
+                let cost_eur = gas / ETA_GAS + carbon * EMISSION_FACTOR_GAS / ETA_GAS;
+                (cost_eur * EUR_PLN_RATE * PASS_THROUGH).max(0.0)
+            }
+            _ => 0.0,
+        };
 
         // delta_oze: normalized duck curve × scale factor
         let delta_oze = match (oze_mw, oze_30d_avg) {
@@ -287,7 +307,7 @@ pub async fn get_evening_decomposition(
 
         let residual = evening - base - delta_fuel - delta_oze;
 
-        // Track CSS contribution % for summary
+        // Track fuel cost contribution % for summary
         if base.abs() > 1.0 {
             css_contrib_sum += (delta_fuel / base) * 100.0;
             css_contrib_count += 1;
@@ -320,7 +340,7 @@ pub async fn get_evening_decomposition(
                 "oze_scale_pln_mwh": OZE_SCALE_PLN_MWH,
             },
             "summary": {
-                "avg_css_contribution_pct": avg_css_pct,
+                "avg_css_contribution_pct": avg_css_pct,  // now: avg fuel cost as % of baseline
             },
             "decomposition": decomposition,
         })),
