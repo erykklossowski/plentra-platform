@@ -125,27 +125,58 @@ pub async fn handler(
             .into_response()
         }
         "entso_da" => {
-            let entsoe_token = match config.entsoe_token {
-                Some(ref t) if !t.is_empty() => t.clone(),
-                _ => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"error": "ENTSOE_TOKEN not set"})),
-                    )
-                        .into_response()
-                }
-            };
+            Json(json!({
+                "status": "deprecated",
+                "message": "ENTSO-E A44 retired — use source=pse_prices instead"
+            }))
+            .into_response()
+        }
+        "pse_prices" => {
+            let app_state = state.clone();
             tokio::spawn(async move {
-                match backfill_entso_da(&client, &entsoe_token, &pool, days).await {
-                    Ok(n) => tracing::info!("ENTSO-E DA backfill: {} rows written", n),
-                    Err(e) => tracing::error!("ENTSO-E DA backfill failed: {}", e),
+                if let Some(ref pool) = app_state.db {
+                    let today = Utc::now().date_naive();
+                    let start_date = today - chrono::Duration::days(days);
+
+                    tracing::info!(
+                        "PSE prices backfill: {} → {} ({} days)",
+                        start_date, today, days
+                    );
+
+                    match crate::fetchers::pse::fetch_energy_prices(
+                        &app_state.http_client,
+                        start_date,
+                        today,
+                    ).await {
+                        Err(e) => tracing::error!("PSE prices backfill failed: {}", e),
+                        Ok(records) => {
+                            tracing::info!(
+                                "PSE prices backfill: writing {} records",
+                                records.len()
+                            );
+                            let mut written = 0usize;
+                            for r in &records {
+                                match crate::db::writer::upsert_pse_hourly_price(pool, r).await {
+                                    Ok(()) => written += 1,
+                                    Err(e) => tracing::warn!(
+                                        "PSE write failed {}: {}", r.ts, e
+                                    ),
+                                }
+                            }
+                            tracing::info!(
+                                "PSE prices backfill complete: {}/{} rows written",
+                                written, records.len()
+                            );
+                            app_state.cache.invalidate("generation");
+                            app_state.cache.invalidate("summary");
+                        }
+                    }
                 }
             });
             Json(json!({
-                "status": "backfill started",
-                "source": "entso_da",
+                "status": "pse prices backfill started",
                 "days": days,
-                "note": "ENTSO-E A44 DA prices for Poland → price_hourly (source=ENTSO_E_PL)"
+                "note": "single HTTP request — check Railway logs for progress"
             }))
             .into_response()
         }
@@ -448,7 +479,7 @@ pub async fn handler(
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, entso_da, entso_generation, sync_fuel_daily, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, pse_prices, entso_generation, sync_fuel_daily, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
             )
                 .into_response()
         }
@@ -535,13 +566,11 @@ async fn backfill_entso_generation(
     pool: &PgPool,
     days: i64,
 ) -> anyhow::Result<usize> {
-    use chrono::Duration;
     use crate::fetchers::entsoe;
 
-    // Map PSR type codes to our internal source_type names
     fn psr_to_source_type(psr: &str) -> Option<&'static str> {
         match psr {
-            "B19" | "B18" => Some("WIND"),    // onshore + offshore
+            "B19" | "B18" => Some("WIND"),
             "B16" => Some("PV"),
             "B02" => Some("LIGNITE"),
             "B05" => Some("HARD_COAL"),
@@ -551,73 +580,39 @@ async fn backfill_entso_generation(
     }
 
     let mut total = 0usize;
-    let mut failures = 0usize;
-    let mut days_processed = 0usize;
+    let chunks = build_monthly_chunks(days);
+    tracing::info!("ENTSO-E gen backfill: {} monthly chunks for {} days", chunks.len(), days);
 
-    for day_offset in (0..days).rev() {
-        let date = (Utc::now() - Duration::days(day_offset + 1)).date_naive();
-        let next_date = date + Duration::days(1);
-        let period_start = date.format("%Y%m%d").to_string();
-        let period_end = next_date.format("%Y%m%d").to_string();
+    for (i, (start, end)) in chunks.iter().enumerate() {
+        tracing::info!("ENTSO-E gen backfill chunk {}/{}: {} → {}", i + 1, chunks.len(), start, end);
 
-        // Retry once on 503
-        let mut attempts = 0;
-        let result = loop {
-            attempts += 1;
-            match entsoe::fetch_hourly_generation_for_date(
-                client, token, &period_start, &period_end,
-            )
-            .await
-            {
-                Ok(data) => break Ok(data),
-                Err(e) if attempts < 2 => {
-                    tracing::debug!("ENTSO-E gen retry for {} after: {}", date, e);
-                    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
-                }
-                Err(e) => break Err(e),
-            }
-        };
-
-        match result {
-            Ok(hourly) => {
-                for (hour, gen) in &hourly {
-                    let ts = date.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
-                    for (psr, value) in &gen.data {
-                        if let Some(source_type) = psr_to_source_type(psr) {
-                            if crate::db::writer::write_generation(
-                                pool, ts, source_type, *value, false, "ENTSO_E",
-                            )
-                            .await
-                            .is_ok()
-                            {
-                                total += 1;
-                            }
+        match entsoe::fetch_hourly_generation_for_range(client, token, start, end).await {
+            Ok(records) => {
+                for (date, hour, psr, value) in &records {
+                    if let Some(source_type) = psr_to_source_type(psr) {
+                        let ts = date.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
+                        if crate::db::writer::write_generation(
+                            pool, ts, source_type, *value, false, "ENTSO_E",
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            total += 1;
                         }
                     }
                 }
+                tracing::info!("ENTSO-E gen chunk {}: {} raw points, {} written so far", i + 1, records.len(), total);
             }
             Err(e) => {
-                failures += 1;
-                tracing::warn!("ENTSO-E generation fetch failed for {}: {}", date, e);
+                tracing::warn!("ENTSO-E gen chunk {} failed: {}", i + 1, e);
             }
         }
 
-        days_processed += 1;
-        if days_processed % 30 == 0 {
-            tracing::info!(
-                "ENTSO-E gen backfill: {} days processed, {} rows written, {} failed",
-                days_processed, total, failures
-            );
-        }
-
-        // Rate limit: 1.2s between requests
-        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        // 2s between monthly chunks — plenty of margin
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
-    tracing::info!(
-        "ENTSO-E gen backfill complete: {} days, {} rows written, {} failed",
-        days_processed, total, failures
-    );
+    tracing::info!("ENTSO-E gen backfill complete: {} rows written", total);
     Ok(total)
 }
 
@@ -627,85 +622,66 @@ async fn backfill_entso_da(
     pool: &PgPool,
     days: i64,
 ) -> anyhow::Result<usize> {
-    use chrono::Duration;
     use crate::fetchers::entsoe;
 
     let mut total = 0usize;
-    let mut failures = 0usize;
-    let mut days_processed = 0usize;
+    let chunks = build_monthly_chunks(days);
+    tracing::info!("ENTSO-E DA backfill: {} monthly chunks for {} days", chunks.len(), days);
 
-    for day_offset in (0..days).rev() {
-        let date = (Utc::now() - Duration::days(day_offset + 1)).date_naive();
-        let next_date = date + Duration::days(1);
-        let period_start = date.format("%Y%m%d").to_string();
-        let period_end = next_date.format("%Y%m%d").to_string();
+    for (i, (start, end)) in chunks.iter().enumerate() {
+        tracing::info!("ENTSO-E DA backfill chunk {}/{}: {} → {}", i + 1, chunks.len(), start, end);
 
-        // Retry once on failure (503 rate limiting)
-        let mut attempts = 0;
-        let result = loop {
-            attempts += 1;
-            match entsoe::fetch_day_ahead_prices_for_date(
-                client,
-                token,
-                "10YPL-AREA-----S",
-                &period_start,
-                &period_end,
-            )
-            .await
-            {
-                Ok(hourly) => break Ok(hourly),
-                Err(e) if attempts < 2 => {
-                    tracing::debug!("ENTSO-E DA retry for {} after error: {}", date, e);
-                    // Back off longer on retry
-                    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
-                }
-                Err(e) => break Err(e),
-            }
-        };
-
-        match result {
-            Ok(hourly) => {
-                for (hour, price) in &hourly {
+        match entsoe::fetch_da_prices_range(
+            client, token, "10YPL-AREA-----S", start, end,
+        )
+        .await
+        {
+            Ok(records) => {
+                for (date, hour, price) in &records {
                     let ts = date.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
-                    match crate::db::writer::write_price_hourly(
-                        pool,
-                        ts,
-                        "ENTSO_E_PL",
-                        "DA",
-                        Some(*price),
-                        None,
-                        false,
+                    if crate::db::writer::write_price_hourly(
+                        pool, ts, "ENTSO_E_PL", "DA", Some(*price), None, false,
                     )
                     .await
+                    .is_ok()
                     {
-                        Ok(()) => total += 1,
-                        Err(e) => tracing::warn!("DA write failed {} h{}: {}", date, hour, e),
+                        total += 1;
                     }
                 }
+                tracing::info!("ENTSO-E DA chunk {}: {} price points, {} written so far", i + 1, records.len(), total);
             }
             Err(e) => {
-                failures += 1;
-                tracing::warn!("ENTSO-E DA fetch failed for {}: {}", date, e);
+                tracing::warn!("ENTSO-E DA chunk {} failed: {}", i + 1, e);
             }
         }
 
-        days_processed += 1;
-        if days_processed % 30 == 0 {
-            tracing::info!(
-                "ENTSO-E DA backfill: {} days processed, {} rows written, {} failed",
-                days_processed, total, failures
-            );
-        }
-
-        // Rate limit: ENTSO-E allows ~60 req/min per token — 1.2s between requests
-        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        // 2s between monthly chunks
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
-    tracing::info!(
-        "ENTSO-E DA backfill complete: {} days, {} rows written, {} failed",
-        days_processed, total, failures
-    );
+    tracing::info!("ENTSO-E DA backfill complete: {} rows written", total);
     Ok(total)
+}
+
+/// Split a `days` range into ~30-day chunks, returning (YYYYMMDD, YYYYMMDD) pairs.
+fn build_monthly_chunks(days: i64) -> Vec<(String, String)> {
+    use chrono::Duration;
+
+    let end_date = Utc::now().date_naive();
+    let start_date = end_date - Duration::days(days);
+    let mut chunks = Vec::new();
+    let mut cursor = start_date;
+
+    while cursor < end_date {
+        let chunk_end = (cursor + Duration::days(30)).min(end_date);
+        chunks.push((
+            cursor.format("%Y%m%d").to_string(),
+            chunk_end.format("%Y%m%d").to_string(),
+        ));
+        cursor = chunk_end;
+    }
+
+    chunks
 }
 
 async fn backfill_reserves(

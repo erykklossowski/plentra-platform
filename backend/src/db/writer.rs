@@ -166,6 +166,33 @@ pub async fn write_reserve_prices(
     Ok(())
 }
 
+/// Upsert one hour of PSE electricity prices (CEN, CKOEB, SDAC).
+/// Uses source='PSE', product='DA' as the unique key alongside ts.
+/// Also populates value_pln_mwh with CEN for backward compat with price_monthly aggregate.
+pub async fn upsert_pse_hourly_price(
+    pool: &PgPool,
+    r: &crate::fetchers::pse::PseHourlyPrice,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"INSERT INTO price_hourly
+            (ts, source, product, value_pln_mwh, cen_pln, ckoeb_pln, csdac_pln, is_forecast)
+        VALUES ($1, 'PSE', 'DA', $2, $2, $3, $4, false)
+        ON CONFLICT (ts, source, product) DO UPDATE SET
+            value_pln_mwh = COALESCE(EXCLUDED.value_pln_mwh, price_hourly.value_pln_mwh),
+            cen_pln       = COALESCE(EXCLUDED.cen_pln,       price_hourly.cen_pln),
+            ckoeb_pln     = COALESCE(EXCLUDED.ckoeb_pln,     price_hourly.ckoeb_pln),
+            csdac_pln     = COALESCE(EXCLUDED.csdac_pln,     price_hourly.csdac_pln)
+        "#,
+    )
+    .bind(r.ts)
+    .bind(r.cen_pln)
+    .bind(r.ckoeb_pln)
+    .bind(r.csdac_pln)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Persist an API response to the api_cache table (upsert).
 pub async fn write_cached_response(
     pool: &PgPool,

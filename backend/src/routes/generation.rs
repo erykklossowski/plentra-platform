@@ -150,52 +150,29 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     // EUR/USD rate — hardcoded fallback (previously fetched from Stooq, now deprecated)
     let eur_usd = 1.08;
 
-    // Get DA price: DB first (price_hourly), then live ENTSO-E, then cached fallback
+    // Get DA price: PSE CEN (PLN→EUR) first, then ENTSO-E fallback, then cached
+    const EUR_PLN_RATE: f64 = 4.27;
     let da_price = {
-        // Step 1: Try price_hourly (most recent hour)
-        let db_price = if let Some(pool) = &state.db {
+        // Step 1: Try PSE CEN from price_hourly (most recent hour)
+        let pse_price = if let Some(pool) = &state.db {
             sqlx::query_scalar::<_, f64>(
-                "SELECT value_eur_mwh FROM price_hourly
-                 WHERE source = 'ENTSO_E_PL' AND product = 'DA'
+                "SELECT cen_pln FROM price_hourly
+                 WHERE source = 'PSE' AND product = 'DA' AND cen_pln IS NOT NULL
                  ORDER BY ts DESC LIMIT 1",
             )
             .fetch_optional(pool)
             .await
             .ok()
             .flatten()
+            .map(|pln| (pln / EUR_PLN_RATE * 100.0).round() / 100.0)
         } else {
             None
         };
 
-        if let Some(price) = db_price {
-            // Spawn background refresh from ENTSO-E
-            let bg_state = state.clone();
-            tokio::spawn(async move {
-                persist_da_prices(&bg_state).await;
-            });
+        if let Some(price) = pse_price {
             price
-        } else if let Some(token) = &state.config.entsoe_token {
-            if !token.is_empty() {
-                match entsoe::fetch_day_ahead_prices(&state.http_client, token, "10YPL-AREA-----S")
-                    .await
-                {
-                    Ok(hourly) => {
-                        // Write-through to price_hourly
-                        if let Some(pool) = &state.db {
-                            let pool = pool.clone();
-                            let hourly_clone = hourly.clone();
-                            tokio::spawn(async move {
-                                write_da_prices_to_db(&pool, &hourly_clone).await;
-                            });
-                        }
-                        entsoe::average_da_price(&hourly)
-                    }
-                    Err(_) => da_price_from_db(&state).await,
-                }
-            } else {
-                da_price_from_db(&state).await
-            }
         } else {
+            // Fallback: ENTSO-E EUR price, then cached, then 0.0
             da_price_from_db(&state).await
         }
     };
@@ -260,10 +237,22 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     (headers, Json(value))
 }
 
-/// Get DA price from the last cached generation response in DB.
+/// Get DA price from DB — tries PSE CEN (PLN→EUR), then ENTSO-E, then cached generation.
 async fn da_price_from_db(state: &Arc<AppState>) -> f64 {
+    const EUR_PLN: f64 = 4.27;
     if let Some(pool) = &state.db {
-        // Try price_hourly first
+        // Try PSE CEN first
+        if let Ok(Some(pln)) = sqlx::query_scalar::<_, f64>(
+            "SELECT cen_pln FROM price_hourly
+             WHERE source = 'PSE' AND product = 'DA' AND cen_pln IS NOT NULL
+             ORDER BY ts DESC LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await
+        {
+            return (pln / EUR_PLN * 100.0).round() / 100.0;
+        }
+        // Try ENTSO-E
         if let Ok(Some(price)) = sqlx::query_scalar::<_, f64>(
             "SELECT value_eur_mwh FROM price_hourly
              WHERE source = 'ENTSO_E_PL' AND product = 'DA'
@@ -284,39 +273,3 @@ async fn da_price_from_db(state: &Arc<AppState>) -> f64 {
     0.0
 }
 
-/// Write hourly DA prices to price_hourly table.
-async fn write_da_prices_to_db(pool: &sqlx::PgPool, hourly: &[(u32, f64)]) {
-    let yesterday = (Utc::now() - chrono::Duration::days(1)).date_naive();
-    for (hour, price) in hourly {
-        let ts = yesterday
-            .and_hms_opt(*hour, 0, 0)
-            .unwrap()
-            .and_utc();
-        if let Err(e) = crate::db::writer::write_price_hourly(
-            pool,
-            ts,
-            "ENTSO_E_PL",
-            "DA",
-            Some(*price),
-            None,
-            false,
-        )
-        .await
-        {
-            tracing::warn!("DA price write failed for hour {}: {}", hour, e);
-        }
-    }
-    tracing::info!("Wrote {} DA price hours to price_hourly", hourly.len());
-}
-
-/// Background task: fetch ENTSO-E DA prices and persist.
-async fn persist_da_prices(state: &Arc<AppState>) {
-    let Some(token) = &state.config.entsoe_token else { return };
-    if token.is_empty() { return; }
-    let Some(pool) = &state.db else { return };
-
-    match entsoe::fetch_day_ahead_prices(&state.http_client, token, "10YPL-AREA-----S").await {
-        Ok(hourly) => write_da_prices_to_db(pool, &hourly).await,
-        Err(e) => tracing::debug!("Background DA price fetch failed: {}", e),
-    }
-}

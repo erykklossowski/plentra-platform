@@ -1,4 +1,5 @@
-use chrono::Datelike;
+use chrono::{Datelike, NaiveDate, TimeZone, Utc};
+use chrono_tz::Europe::Warsaw;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -262,6 +263,127 @@ pub fn build_monthly_avg_history(
         })
         .collect()
 }
+
+// ─── Energy prices (CEN, CKOEB, SDAC) ───
+
+#[derive(Debug, Deserialize)]
+struct PseEnergyPricesResponse {
+    value: Vec<PseEnergyPriceRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PseEnergyPriceRecord {
+    doba:       String,       // "YYYY-MM-DD" — trading day
+    godzina:    u32,          // 1..24 — WARSAW LOCAL TIME, not UTC
+    cen_rozl:   Option<f64>,  // CEN settlement price PLN/MWh
+    ckoeb_rozl: Option<f64>,  // CKOEB balancing market PLN/MWh
+    csdac_pln:  Option<f64>,  // SDAC DA coupling PLN/MWh
+}
+
+/// One hour of Polish electricity prices.
+#[derive(Debug, Clone)]
+pub struct PseHourlyPrice {
+    pub ts:        chrono::DateTime<Utc>,  // UTC — converted from Warsaw local
+    pub cen_pln:   Option<f64>,
+    pub ckoeb_pln: Option<f64>,
+    pub csdac_pln: Option<f64>,
+}
+
+/// Fetch CEN, CKOEB and SDAC hourly prices from PSE energy-prices.
+/// Returns one record per hour for the given date range.
+/// Single HTTP request regardless of date range size.
+pub async fn fetch_energy_prices(
+    client:     &reqwest::Client,
+    start_date: NaiveDate,
+    end_date:   NaiveDate,
+) -> anyhow::Result<Vec<PseHourlyPrice>> {
+    let url = format!(
+        "https://api.raporty.pse.pl/api/energy-prices\
+         ?$filter=doba ge '{}' and doba le '{}'\
+         &$orderby=doba asc,godzina asc\
+         &$select=doba,godzina,cen_rozl,ckoeb_rozl,csdac_pln\
+         &$top=9000",
+        start_date.format("%Y-%m-%d"),
+        end_date.format("%Y-%m-%d"),
+    );
+
+    tracing::info!(
+        "PSE energy-prices: fetching {} → {}",
+        start_date, end_date
+    );
+
+    let resp = client
+        .get(&url)
+        .header("User-Agent", PSE_UA)
+        .header("Accept", "application/json")
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<PseEnergyPricesResponse>()
+        .await?;
+
+    tracing::info!(
+        "PSE energy-prices: {} records received",
+        resp.value.len()
+    );
+
+    let mut records: Vec<PseHourlyPrice> = Vec::with_capacity(resp.value.len());
+
+    for r in resp.value {
+        let date = NaiveDate::parse_from_str(&r.doba, "%Y-%m-%d")
+            .map_err(|e| anyhow::anyhow!("PSE: invalid date '{}': {}", r.doba, e))?;
+
+        // PSE godzina is 1-indexed Warsaw local time.
+        // godzina=1 → 00:00 Warsaw, godzina=24 → 23:00 Warsaw.
+        let local_hour = match r.godzina.checked_sub(1) {
+            Some(h) => h,
+            None => {
+                tracing::warn!("PSE: invalid godzina=0 for {}, skipping", r.doba);
+                continue;
+            }
+        };
+
+        let naive_local = match date.and_hms_opt(local_hour, 0, 0) {
+            Some(dt) => dt,
+            None => {
+                tracing::debug!(
+                    "PSE: skipping non-existent local time {}T{:02}:00 (DST gap)",
+                    r.doba, local_hour
+                );
+                continue;
+            }
+        };
+
+        // Convert Warsaw local → UTC using chrono-tz
+        let ts_utc = match Warsaw.from_local_datetime(&naive_local) {
+            chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
+            chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
+            chrono::LocalResult::None => {
+                tracing::debug!(
+                    "PSE: skipping invalid Warsaw time {}T{:02}:00",
+                    r.doba, local_hour
+                );
+                continue;
+            }
+        };
+
+        records.push(PseHourlyPrice {
+            ts:        ts_utc,
+            cen_pln:   r.cen_rozl,
+            ckoeb_pln: r.ckoeb_rozl,
+            csdac_pln: r.csdac_pln,
+        });
+    }
+
+    tracing::info!(
+        "PSE energy-prices: {} records after timezone conversion",
+        records.len()
+    );
+
+    Ok(records)
+}
+
+// ─── PSE base URL constant ───
 
 // ─── Date helpers ───
 

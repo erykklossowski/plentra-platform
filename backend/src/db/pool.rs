@@ -22,7 +22,7 @@ pub async fn connect(database_url: &str) -> anyhow::Result<PgPool> {
 async fn check_data_integrity(pool: &PgPool) {
     // Tables that require backfill to populate — EMPTY is expected before first backfill
     let backfill_tables = [
-        ("price_hourly", "run /admin/backfill?source=entso_da&days=365"),
+        ("price_hourly", "run /admin/backfill?source=pse_prices&days=365"),
         ("generation_hourly", "run /admin/backfill?source=entso_generation&days=90"),
     ];
     // Tables that should have data after initial setup

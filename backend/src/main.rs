@@ -152,47 +152,7 @@ async fn main() {
                         }
                     }
 
-                    // Persist ENTSO-E DA prices for yesterday
-                if let Some(ref entsoe_token) = sched_state.config.entsoe_token {
-                    if !entsoe_token.is_empty() {
-                        match fetchers::entsoe::fetch_day_ahead_prices(
-                            &sched_state.http_client,
-                            entsoe_token,
-                            "10YPL-AREA-----S",
-                        )
-                        .await
-                        {
-                            Ok(hourly) => {
-                                let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
-                                    .date_naive();
-                                let mut da_written = 0usize;
-                                for (hour, price) in &hourly {
-                                    let ts = yesterday
-                                        .and_hms_opt(*hour, 0, 0)
-                                        .unwrap()
-                                        .and_utc();
-                                    if db::writer::write_price_hourly(
-                                        pool, ts, "ENTSO_E_PL", "DA",
-                                        Some(*price), None, false,
-                                    )
-                                    .await
-                                    .is_ok()
-                                    {
-                                        da_written += 1;
-                                    }
-                                }
-                                tracing::info!(
-                                    "Fuel scheduler: wrote {} DA price hours for {}",
-                                    da_written,
-                                    yesterday
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!("Fuel scheduler: ENTSO-E DA fetch failed: {}", e);
-                            }
-                        }
-                    }
-                }
+                    // ENTSO-E DA prices retired — PSE scheduler handles DA prices at 15:00 UTC
 
                 // Daily OHLCV fetch + CSS calculation
                     let today = chrono::Utc::now().date_naive();
@@ -231,6 +191,71 @@ async fn main() {
                                     tracing::debug!("CDS skipped {}: {}", yesterday, e)
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // PSE electricity price scheduler — fires at 15:00 UTC daily
+    // PSE publishes next-day prices around 14:00 CET
+    {
+        let sched_state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                let now = chrono::Utc::now();
+                let target = now
+                    .date_naive()
+                    .and_hms_opt(15, 0, 0)
+                    .unwrap()
+                    .and_utc();
+                let next_run = if now < target {
+                    target
+                } else {
+                    (now.date_naive() + chrono::Duration::days(1))
+                        .and_hms_opt(15, 0, 0)
+                        .unwrap()
+                        .and_utc()
+                };
+
+                let secs = (next_run - now).num_seconds().max(0) as u64;
+                tracing::info!(
+                    "PSE price scheduler: sleeping {}s until {}",
+                    secs,
+                    next_run.format("%Y-%m-%d %H:%M UTC")
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(secs)).await;
+
+                if let Some(ref pool) = sched_state.db {
+                    let today = chrono::Utc::now().date_naive();
+                    let start_date = today - chrono::Duration::days(1);
+                    let end_date = today + chrono::Duration::days(1);
+
+                    match crate::fetchers::pse::fetch_energy_prices(
+                        &sched_state.http_client,
+                        start_date,
+                        end_date,
+                    )
+                    .await
+                    {
+                        Err(e) => tracing::error!("PSE price scheduler: {}", e),
+                        Ok(records) => {
+                            let mut written = 0usize;
+                            for r in &records {
+                                if crate::db::writer::upsert_pse_hourly_price(pool, r)
+                                    .await
+                                    .is_ok()
+                                {
+                                    written += 1;
+                                }
+                            }
+                            tracing::info!(
+                                "PSE price scheduler: {} rows written for {} → {}",
+                                written, start_date, end_date
+                            );
+                            sched_state.cache.invalidate("generation");
+                            sched_state.cache.invalidate("summary");
                         }
                     }
                 }

@@ -356,7 +356,7 @@ pub async fn prices_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HistoryParams>,
 ) -> (HeaderMap, Json<Value>) {
-    let source = params.source.as_deref().unwrap_or("ENTSO_E_PL");
+    let source = params.source.as_deref().unwrap_or("PSE");
     let resolution = params.resolution.as_deref().unwrap_or("daily");
     let bucket = resolution_to_bucket(resolution);
     let from = params.from.as_deref().unwrap_or("2025-01-01");
@@ -371,6 +371,53 @@ pub async fn prices_handler(
         None => return (headers_cached(), Json(empty_history(source, resolution, from, &to))),
     };
 
+    // PSE source: return three price series (CEN, CKOEB, SDAC)
+    if source == "PSE" {
+        let rows = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, Option<f64>, Option<f64>, Option<f64>)>(
+            r#"SELECT
+                   time_bucket($1::interval, ts) AS bucket,
+                   AVG(cen_pln)   AS avg_cen,
+                   AVG(ckoeb_pln) AS avg_ckoeb,
+                   AVG(csdac_pln) AS avg_sdac
+               FROM price_hourly
+               WHERE source = 'PSE'
+                 AND product = 'DA'
+                 AND ts >= $2::date
+                 AND ts <= $3::date
+               GROUP BY bucket
+               ORDER BY bucket ASC"#,
+        )
+        .bind(bucket)
+        .bind(from)
+        .bind(to.as_str())
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let cen: Vec<Value> = rows.iter().map(|(ts, cen, _, _)| json!({"ts": ts.map(|t| t.to_rfc3339()), "value": cen.map(round2)})).collect();
+        let ckoeb: Vec<Value> = rows.iter().map(|(ts, _, ckoeb, _)| json!({"ts": ts.map(|t| t.to_rfc3339()), "value": ckoeb.map(round2)})).collect();
+        let sdac: Vec<Value> = rows.iter().map(|(ts, _, _, sdac)| json!({"ts": ts.map(|t| t.to_rfc3339()), "value": sdac.map(round2)})).collect();
+
+        let count = rows.len();
+        return (
+            headers_cached(),
+            Json(json!({
+                "ticker": "PSE_DA",
+                "resolution": resolution,
+                "from": from,
+                "to": to,
+                "point_count": count,
+                "series": {
+                    "cen": cen,
+                    "ckoeb": ckoeb,
+                    "sdac": sdac,
+                },
+                "source": "PSE api.raporty.pse.pl",
+            })),
+        );
+    }
+
+    // Other sources: legacy EUR-based query
     let rows = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, Option<f64>, Option<f64>, Option<f64>)>(
         r#"SELECT
                time_bucket($1::interval, ts) AS bucket,
