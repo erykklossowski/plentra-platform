@@ -565,6 +565,23 @@ fn parse_da_prices_xml(xml: &str) -> Result<Vec<(u32, f64)>> {
     Ok(hourly)
 }
 
+/// Fetch hourly generation for a specific date (for backfill).
+pub async fn fetch_hourly_generation_for_date(
+    client: &reqwest::Client,
+    token: &str,
+    period_start: &str,
+    period_end: &str,
+) -> Result<Vec<(u32, GenerationByType)>> {
+    let url = format!(
+        "{ENTSOE_BASE_URL}?securityToken={token}&documentType=A75&processType=A16\
+         &in_Domain={POLAND_AREA}\
+         &periodStart={period_start}0000&periodEnd={period_end}0000"
+    );
+
+    let text = fetch_xml(client, &url, &format!("A75-backfill-{period_start}")).await?;
+    parse_hourly_generation_xml(&text)
+}
+
 /// Fetch day-ahead prices for a specific date range (for backfill).
 /// `start` and `end` are dates in YYYYMMDD format.
 pub async fn fetch_day_ahead_prices_for_date(

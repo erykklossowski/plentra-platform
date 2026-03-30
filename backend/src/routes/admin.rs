@@ -99,6 +99,31 @@ pub async fn handler(
             }))
             .into_response()
         }
+        "entso_generation" => {
+            let entsoe_token = match config.entsoe_token {
+                Some(ref t) if !t.is_empty() => t.clone(),
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": "ENTSOE_TOKEN not set"})),
+                    )
+                        .into_response()
+                }
+            };
+            tokio::spawn(async move {
+                match backfill_entso_generation(&client, &entsoe_token, &pool, days).await {
+                    Ok(n) => tracing::info!("ENTSO-E generation backfill: {} rows written", n),
+                    Err(e) => tracing::error!("ENTSO-E generation backfill failed: {}", e),
+                }
+            });
+            Json(json!({
+                "status": "backfill started",
+                "source": "entso_generation",
+                "days": days,
+                "note": "ENTSO-E A75 generation by type → generation_hourly"
+            }))
+            .into_response()
+        }
         "entso_da" => {
             let entsoe_token = match config.entsoe_token {
                 Some(ref t) if !t.is_empty() => t.clone(),
@@ -423,7 +448,7 @@ pub async fn handler(
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, entso_da, sync_fuel_daily, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, entso_da, entso_generation, sync_fuel_daily, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
             )
                 .into_response()
         }
@@ -504,6 +529,98 @@ async fn backfill_curtailment(
     Ok(total)
 }
 
+async fn backfill_entso_generation(
+    client: &reqwest::Client,
+    token: &str,
+    pool: &PgPool,
+    days: i64,
+) -> anyhow::Result<usize> {
+    use chrono::Duration;
+    use crate::fetchers::entsoe;
+
+    // Map PSR type codes to our internal source_type names
+    fn psr_to_source_type(psr: &str) -> Option<&'static str> {
+        match psr {
+            "B19" | "B18" => Some("WIND"),    // onshore + offshore
+            "B16" => Some("PV"),
+            "B02" => Some("LIGNITE"),
+            "B05" => Some("HARD_COAL"),
+            "B04" => Some("GAS"),
+            _ => None,
+        }
+    }
+
+    let mut total = 0usize;
+    let mut failures = 0usize;
+    let mut days_processed = 0usize;
+
+    for day_offset in (0..days).rev() {
+        let date = (Utc::now() - Duration::days(day_offset + 1)).date_naive();
+        let next_date = date + Duration::days(1);
+        let period_start = date.format("%Y%m%d").to_string();
+        let period_end = next_date.format("%Y%m%d").to_string();
+
+        // Retry once on 503
+        let mut attempts = 0;
+        let result = loop {
+            attempts += 1;
+            match entsoe::fetch_hourly_generation_for_date(
+                client, token, &period_start, &period_end,
+            )
+            .await
+            {
+                Ok(data) => break Ok(data),
+                Err(e) if attempts < 2 => {
+                    tracing::debug!("ENTSO-E gen retry for {} after: {}", date, e);
+                    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+                }
+                Err(e) => break Err(e),
+            }
+        };
+
+        match result {
+            Ok(hourly) => {
+                for (hour, gen) in &hourly {
+                    let ts = date.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
+                    for (psr, value) in &gen.data {
+                        if let Some(source_type) = psr_to_source_type(psr) {
+                            if crate::db::writer::write_generation(
+                                pool, ts, source_type, *value, false, "ENTSO_E",
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                total += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                tracing::warn!("ENTSO-E generation fetch failed for {}: {}", date, e);
+            }
+        }
+
+        days_processed += 1;
+        if days_processed % 30 == 0 {
+            tracing::info!(
+                "ENTSO-E gen backfill: {} days processed, {} rows written, {} failed",
+                days_processed, total, failures
+            );
+        }
+
+        // Rate limit: 1.2s between requests
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    }
+
+    tracing::info!(
+        "ENTSO-E gen backfill complete: {} days, {} rows written, {} failed",
+        days_processed, total, failures
+    );
+    Ok(total)
+}
+
 async fn backfill_entso_da(
     client: &reqwest::Client,
     token: &str,
@@ -514,6 +631,8 @@ async fn backfill_entso_da(
     use crate::fetchers::entsoe;
 
     let mut total = 0usize;
+    let mut failures = 0usize;
+    let mut days_processed = 0usize;
 
     for day_offset in (0..days).rev() {
         let date = (Utc::now() - Duration::days(day_offset + 1)).date_naive();
@@ -521,15 +640,30 @@ async fn backfill_entso_da(
         let period_start = date.format("%Y%m%d").to_string();
         let period_end = next_date.format("%Y%m%d").to_string();
 
-        match entsoe::fetch_day_ahead_prices_for_date(
-            client,
-            token,
-            "10YPL-AREA-----S",
-            &period_start,
-            &period_end,
-        )
-        .await
-        {
+        // Retry once on failure (503 rate limiting)
+        let mut attempts = 0;
+        let result = loop {
+            attempts += 1;
+            match entsoe::fetch_day_ahead_prices_for_date(
+                client,
+                token,
+                "10YPL-AREA-----S",
+                &period_start,
+                &period_end,
+            )
+            .await
+            {
+                Ok(hourly) => break Ok(hourly),
+                Err(e) if attempts < 2 => {
+                    tracing::debug!("ENTSO-E DA retry for {} after error: {}", date, e);
+                    // Back off longer on retry
+                    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+                }
+                Err(e) => break Err(e),
+            }
+        };
+
+        match result {
             Ok(hourly) => {
                 for (hour, price) in &hourly {
                     let ts = date.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
@@ -550,18 +684,27 @@ async fn backfill_entso_da(
                 }
             }
             Err(e) => {
+                failures += 1;
                 tracing::warn!("ENTSO-E DA fetch failed for {}: {}", date, e);
             }
         }
 
-        if day_offset % 10 == 0 {
-            tracing::info!("ENTSO-E DA backfill: {} days remaining, {} rows so far", day_offset, total);
+        days_processed += 1;
+        if days_processed % 30 == 0 {
+            tracing::info!(
+                "ENTSO-E DA backfill: {} days processed, {} rows written, {} failed",
+                days_processed, total, failures
+            );
         }
 
-        // Rate limit: ENTSO-E allows ~400 req/min, but be conservative
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // Rate limit: ENTSO-E allows ~60 req/min per token — 1.2s between requests
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     }
 
+    tracing::info!(
+        "ENTSO-E DA backfill complete: {} days, {} rows written, {} failed",
+        days_processed, total, failures
+    );
     Ok(total)
 }
 

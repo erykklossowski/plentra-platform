@@ -84,9 +84,12 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 entsoe::calculate_cri(load_mw, residual_mw, must_run_mw, renewable_mw);
             let congestion_pct = entsoe::calculate_congestion_probability(cri_value);
 
+            // Extract hourly generation data (keep a copy for DB write-through)
+            let hourly_gen_data = hourly_gen_res.unwrap_or_default();
+
             // Build hourly profile
             let hourly_profile = build_hourly_profile(
-                &hourly_gen_res.unwrap_or_default(),
+                &hourly_gen_data,
                 &hourly_load_res.unwrap_or_default(),
                 residual_gw,
                 must_run_gw,
@@ -144,6 +147,41 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 value.clone(),
                 state.config.cache_ttl_entsoe,
             );
+
+            // Write-through: persist hourly generation to generation_hourly
+            if let Some(ref pool) = state.db {
+                let pool = pool.clone();
+                let gen_data = hourly_gen_data.clone();
+                let yesterday = (Utc::now() - chrono::Duration::days(1)).date_naive();
+                tokio::spawn(async move {
+                    let mut written = 0usize;
+                    for (hour, gen) in &gen_data {
+                        let ts = yesterday.and_hms_opt(*hour, 0, 0).unwrap().and_utc();
+                        let entries: Vec<(&str, f64)> = vec![
+                            ("WIND", gen.wind_mw()),
+                            ("PV", gen.solar_mw()),
+                            ("LIGNITE", gen.lignite_mw()),
+                            ("HARD_COAL", gen.hard_coal_mw()),
+                            ("GAS", gen.gas_mw()),
+                        ];
+                        for (source_type, value_mw) in entries {
+                            if value_mw > 0.0 {
+                                if crate::db::writer::write_generation(
+                                    &pool, ts, source_type, value_mw, false, "ENTSO_E",
+                                )
+                                .await
+                                .is_ok()
+                                {
+                                    written += 1;
+                                }
+                            }
+                        }
+                    }
+                    if written > 0 {
+                        tracing::info!("Wrote {} generation_hourly rows", written);
+                    }
+                });
+            }
 
             // Persist to DB for future fallback
             persist_to_db(&state, CACHE_KEY, &value);
