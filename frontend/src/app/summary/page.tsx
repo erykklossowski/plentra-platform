@@ -249,20 +249,20 @@ function PolishMarketSection({ psePrices }: { psePrices: PsePricesResponse | nul
           Polish Day-Ahead Market
         </h2>
         <p className="text-[10px] uppercase tracking-widest text-on-surface-variant mt-1">
-          CEN · CKOEB · SDAC — źródło: PSE api.raporty.pse.pl
+          SDAC · CEN · CKOEB — źródło: PSE api.raporty.pse.pl
         </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <PseCard label="CEN (Rozliczenie)" value={lastCen} delta={cenDelta} color="primary" />
-        <PseCard label="CKOEB (Bilansowanie)" value={lastCkoeb} delta={ckoebDelta} color="amber" />
-        <PseCard label="SDAC (Coupling)" value={lastSdac} delta={sdacDelta} color="slate" />
+        <PseCard label="SDAC (Day-Ahead)" value={lastSdac} delta={sdacDelta} color="primary" />
+        <PseCard label="CEN (Niezbilansowanie)" value={lastCen} delta={cenDelta} color="amber" />
+        <PseCard label="CKOEB (Bilansowanie)" value={lastCkoeb} delta={ckoebDelta} color="slate" />
       </div>
 
       <PseHistoricalChart
-        title="CEN — Cena Rozliczeniowa DA"
+        title="SDAC — Cena Day-Ahead (SIDC/SDAC)"
         yLabel="PLN/MWh"
-        seriesKey="cen"
+        seriesKey="sdac"
         color="#76d6d5"
         defaultDays={30}
       />
