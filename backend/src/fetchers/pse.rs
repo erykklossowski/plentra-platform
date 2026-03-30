@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDate, TimeZone, Utc};
+use chrono::{Datelike, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Europe::Warsaw;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -267,20 +267,16 @@ pub fn build_monthly_avg_history(
 // ─── Energy prices (CEN, CKOEB, SDAC) ───
 
 #[derive(Debug, Deserialize)]
-struct PseEnergyPricesResponse {
-    value: Vec<PseEnergyPriceRecord>,
-}
-
-#[derive(Debug, Deserialize)]
 struct PseEnergyPriceRecord {
-    doba:       String,       // "YYYY-MM-DD" — trading day
-    godzina:    u32,          // 1..24 — WARSAW LOCAL TIME, not UTC
-    cen_rozl:   Option<f64>,  // CEN settlement price PLN/MWh
-    ckoeb_rozl: Option<f64>,  // CKOEB balancing market PLN/MWh
-    csdac_pln:  Option<f64>,  // SDAC DA coupling PLN/MWh
+    dtime:       String,       // "YYYY-MM-DD HH:MM:SS" — Warsaw local, 15-min
+    #[allow(dead_code)]
+    business_date: String,     // "YYYY-MM-DD"
+    cen_cost:    Option<f64>,  // CEN settlement price PLN/MWh
+    ceb_pp_cost: Option<f64>,  // CEB balancing market price PLN/MWh
+    csdac_pln:   Option<f64>,  // SDAC DA coupling PLN/MWh
 }
 
-/// One hour of Polish electricity prices.
+/// One hour of Polish electricity prices (aggregated from 15-min PSE data).
 #[derive(Debug, Clone)]
 pub struct PseHourlyPrice {
     pub ts:        chrono::DateTime<Utc>,  // UTC — converted from Warsaw local
@@ -289,94 +285,80 @@ pub struct PseHourlyPrice {
     pub csdac_pln: Option<f64>,
 }
 
-/// Fetch CEN, CKOEB and SDAC hourly prices from PSE energy-prices.
-/// Returns one record per hour for the given date range.
-/// Single HTTP request regardless of date range size.
+/// Fetch CEN, CEB and SDAC prices from PSE energy-prices endpoint.
+/// PSE returns 15-min intervals; we aggregate to hourly averages.
+/// Fetches day-by-day (PSE returns max ~100 records per request).
 pub async fn fetch_energy_prices(
     client:     &reqwest::Client,
     start_date: NaiveDate,
     end_date:   NaiveDate,
 ) -> anyhow::Result<Vec<PseHourlyPrice>> {
-    let url = format!(
-        "https://api.raporty.pse.pl/api/energy-prices\
-         ?$filter=doba ge '{}' and doba le '{}'\
-         &$orderby=doba asc,godzina asc\
-         &$select=doba,godzina,cen_rozl,ckoeb_rozl,csdac_pln\
-         &$top=9000",
-        start_date.format("%Y-%m-%d"),
-        end_date.format("%Y-%m-%d"),
-    );
-
     tracing::info!(
         "PSE energy-prices: fetching {} → {}",
         start_date, end_date
     );
 
-    let resp = client
-        .get(&url)
-        .header("User-Agent", PSE_UA)
-        .header("Accept", "application/json")
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<PseEnergyPricesResponse>()
-        .await?;
+    // Fetch day by day — PSE returns max ~100 records per request
+    let raw_records: Vec<PseEnergyPriceRecord> = fetch_pse_date_range(
+        client,
+        "energy-prices",
+        &start_date.to_string(),
+        &end_date.to_string(),
+    )
+    .await;
 
     tracing::info!(
-        "PSE energy-prices: {} records received",
-        resp.value.len()
+        "PSE energy-prices: {} raw 15-min records received",
+        raw_records.len()
     );
 
-    let mut records: Vec<PseHourlyPrice> = Vec::with_capacity(resp.value.len());
+    // Group by hour (truncate dtime to hour) and average
+    let mut hourly_map: std::collections::BTreeMap<
+        chrono::DateTime<Utc>,
+        (Vec<f64>, Vec<f64>, Vec<f64>),
+    > = std::collections::BTreeMap::new();
 
-    for r in resp.value {
-        let date = NaiveDate::parse_from_str(&r.doba, "%Y-%m-%d")
-            .map_err(|e| anyhow::anyhow!("PSE: invalid date '{}': {}", r.doba, e))?;
-
-        // PSE godzina is 1-indexed Warsaw local time.
-        // godzina=1 → 00:00 Warsaw, godzina=24 → 23:00 Warsaw.
-        let local_hour = match r.godzina.checked_sub(1) {
-            Some(h) => h,
-            None => {
-                tracing::warn!("PSE: invalid godzina=0 for {}, skipping", r.doba);
-                continue;
-            }
+    for r in &raw_records {
+        // Parse dtime as Warsaw local, truncate to hour, convert to UTC
+        let ndt = match chrono::NaiveDateTime::parse_from_str(&r.dtime, "%Y-%m-%d %H:%M:%S") {
+            Ok(dt) => dt,
+            Err(_) => continue,
         };
-
-        let naive_local = match date.and_hms_opt(local_hour, 0, 0) {
+        // Truncate to hour
+        let hour_local = match ndt.date().and_hms_opt(ndt.time().hour(), 0, 0) {
             Some(dt) => dt,
-            None => {
-                tracing::debug!(
-                    "PSE: skipping non-existent local time {}T{:02}:00 (DST gap)",
-                    r.doba, local_hour
-                );
-                continue;
-            }
+            None => continue,
         };
-
-        // Convert Warsaw local → UTC using chrono-tz
-        let ts_utc = match Warsaw.from_local_datetime(&naive_local) {
+        // Convert Warsaw → UTC
+        let ts_utc = match Warsaw.from_local_datetime(&hour_local) {
             chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
             chrono::LocalResult::Ambiguous(dt, _) => dt.with_timezone(&Utc),
-            chrono::LocalResult::None => {
-                tracing::debug!(
-                    "PSE: skipping invalid Warsaw time {}T{:02}:00",
-                    r.doba, local_hour
-                );
-                continue;
-            }
+            chrono::LocalResult::None => continue,
         };
 
-        records.push(PseHourlyPrice {
-            ts:        ts_utc,
-            cen_pln:   r.cen_rozl,
-            ckoeb_pln: r.ckoeb_rozl,
-            csdac_pln: r.csdac_pln,
-        });
+        let entry = hourly_map.entry(ts_utc).or_insert_with(|| (vec![], vec![], vec![]));
+        if let Some(v) = r.cen_cost { entry.0.push(v); }
+        if let Some(v) = r.ceb_pp_cost { entry.1.push(v); }
+        if let Some(v) = r.csdac_pln { entry.2.push(v); }
     }
 
+    let avg = |vals: &[f64]| -> Option<f64> {
+        if vals.is_empty() { None }
+        else { Some(round2(vals.iter().sum::<f64>() / vals.len() as f64)) }
+    };
+
+    let records: Vec<PseHourlyPrice> = hourly_map
+        .into_iter()
+        .map(|(ts, (cen, ceb, sdac))| PseHourlyPrice {
+            ts,
+            cen_pln:   avg(&cen),
+            ckoeb_pln: avg(&ceb),
+            csdac_pln: avg(&sdac),
+        })
+        .collect();
+
     tracing::info!(
-        "PSE energy-prices: {} records after timezone conversion",
+        "PSE energy-prices: {} hourly records after aggregation",
         records.len()
     );
 
