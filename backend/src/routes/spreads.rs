@@ -2,9 +2,12 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::HeaderMap;
+use axum::response::IntoResponse;
 use axum::Json;
 use chrono::Utc;
-use serde_json::Value;
+use serde_json::{json, Value};
+
+use sqlx;
 
 use crate::models::fuel::FuelData;
 use crate::models::spread::{SpreadData, SpreadHistoryEntry};
@@ -183,6 +186,53 @@ async fn db_fallback(state: &Arc<AppState>, key: &str) -> Option<serde_json::Val
     } else {
         None
     }
+}
+
+/// GET /api/spreads/css — rolling 3-month clean spark spread from calculated_spreads.
+pub async fn get_css(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Some(ref pool) = state.db else {
+        return Json(json!({ "error": "database not connected" })).into_response();
+    };
+
+    let rows = sqlx::query_as::<_, (chrono::NaiveDate, f64, f64, f64, f64, Vec<String>, Vec<String>, String)>(
+        r#"
+        SELECT date, value, power_avg, gas_avg, carbon_price,
+               power_symbols, gas_symbols, carbon_symbol
+        FROM calculated_spreads
+        WHERE spread_type = 'rolling_3m_css'
+          AND date >= CURRENT_DATE - INTERVAL '90 days'
+        ORDER BY date ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let series: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "date":          r.0.to_string(),
+                "css":           r.1,
+                "power_avg":     r.2,
+                "gas_avg":       r.3,
+                "carbon_price":  r.4,
+                "power_symbols": r.5,
+                "gas_symbols":   r.6,
+                "carbon_symbol": r.7,
+            })
+        })
+        .collect();
+
+    Json(json!({
+        "spread_type": "rolling_3m_css",
+        "latest": rows.last().map(|r| json!({
+            "date":  r.0.to_string(),
+            "value": r.1,
+        })),
+        "series": series,
+    }))
+    .into_response()
 }
 
 #[cfg(test)]

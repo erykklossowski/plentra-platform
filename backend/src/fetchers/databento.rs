@@ -4,13 +4,15 @@
 //! Dataset: IFEU.IMPACT (ICE Futures Europe, iMpact feed)
 //! Schema: Statistics (official exchange settlement prices)
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use databento::{
-    dbn::{Schema, SType, StatMsg},
+    dbn::{decode::DbnMetadata, OhlcvMsg, Schema, SType, StatMsg},
     historical::timeseries::GetRangeParams,
     HistoricalClient,
 };
 use time::OffsetDateTime;
+
+use crate::db::models::FuelOhlcv;
 
 /// Instrument definition.
 #[derive(Debug, Clone, Copy)]
@@ -28,7 +30,7 @@ pub const INSTRUMENTS: &[Instrument] = &[
     Instrument {
         name: "TTF",
         dataset: "IFEU.IMPACT",
-        symbol: "TFU.FUT",
+        symbol: "TFM.FUT",
         unit: "EUR/MWh",
         settlement_stat_type: 1, // SettlementPrice — same for all ICE instruments
         price_min: 5.0,
@@ -50,6 +52,15 @@ pub const INSTRUMENTS: &[Instrument] = &[
         unit: "USD/t",
         settlement_stat_type: 1, // confirmed: SettlementPrice
         price_min: 30.0,
+        price_max: 500.0,
+    },
+    Instrument {
+        name: "GAB",
+        dataset: "IFEU.IMPACT",
+        symbol: "GAB.FUT",
+        unit: "EUR/MWh",
+        settlement_stat_type: 1,
+        price_min: 0.0,
         price_max: 500.0,
     },
 ];
@@ -274,6 +285,117 @@ pub async fn fetch_today(
     }
 
     results
+}
+
+/// Fetch daily OHLCV bars for all instruments over a date range.
+/// One FuelOhlcv per (date, instrument_id) — no aggregation.
+/// Missing dates (weekends, holidays) simply produce no record.
+pub async fn fetch_ohlcv(
+    api_key: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> anyhow::Result<Vec<FuelOhlcv>> {
+    let mut all: Vec<FuelOhlcv> = Vec::new();
+
+    for instrument_def in INSTRUMENTS {
+        tracing::info!(
+            "fetch_ohlcv: {} ({}) {} -> {} [{}]",
+            instrument_def.name,
+            instrument_def.symbol,
+            start_date,
+            end_date,
+            instrument_def.dataset
+        );
+
+        let mut client = HistoricalClient::builder().key(api_key)?.build()?;
+
+        let mut decoder = client
+            .timeseries()
+            .get_range(
+                &GetRangeParams::builder()
+                    .dataset(instrument_def.dataset)
+                    .symbols(vec![instrument_def.symbol])
+                    .schema(Schema::Ohlcv1D)
+                    .date_time_range(to_time_odt(start_date)..to_time_odt(end_date))
+                    .stype_in(SType::Parent)
+                    .build(),
+            )
+            .await?;
+
+        let metadata = decoder.metadata().clone();
+        let mut count = 0usize;
+
+        while let Some(msg) = decoder.decode_record::<OhlcvMsg>().await? {
+            // ts_event is the start of the 1-day bar in nanoseconds
+            let ts = chrono::DateTime::from_timestamp(
+                (msg.hd.ts_event / 1_000_000_000) as i64,
+                0,
+            )
+            .unwrap_or_else(chrono::Utc::now);
+
+            let date = ts.date_naive();
+            let instrument_id = msg.hd.instrument_id as i64;
+
+            // Resolve raw_symbol from SymbolMap
+            // TsSymbolMap::get takes (time::Date, u32)
+            let time_date = time::Date::from_calendar_date(
+                date.year(),
+                time::Month::try_from(date.month() as u8).unwrap(),
+                date.day() as u8,
+            )
+            .ok();
+            let raw_symbol: String = metadata
+                .symbol_map()
+                .ok()
+                .and_then(|sm| {
+                    time_date.and_then(|td| {
+                        sm.get(td, msg.hd.instrument_id).map(|s| s.to_string())
+                    })
+                })
+                .unwrap_or_else(|| format!("UNKNOWN_{}", instrument_id));
+
+            // Decode prices: int64 fixed-point, 1 unit = 1e-9
+            let open = msg.open as f64 / 1_000_000_000.0;
+            let high = msg.high as f64 / 1_000_000_000.0;
+            let low = msg.low as f64 / 1_000_000_000.0;
+            let close = msg.close as f64 / 1_000_000_000.0;
+
+            // Sanity check — reject obviously wrong prices
+            if close <= 0.0 {
+                tracing::debug!(
+                    "Skipping zero/negative close for {} {} on {}",
+                    instrument_def.name,
+                    raw_symbol,
+                    date
+                );
+                continue;
+            }
+
+            all.push(FuelOhlcv {
+                date,
+                instrument_id,
+                dataset: instrument_def.dataset.to_string(),
+                ticker: instrument_def.name.to_string(),
+                raw_symbol,
+                unit: instrument_def.unit.to_string(),
+                open,
+                high,
+                low,
+                close,
+                volume: msg.volume as i64,
+            });
+
+            count += 1;
+        }
+
+        tracing::info!("fetch_ohlcv {}: {} bars", instrument_def.name, count);
+    }
+
+    tracing::info!(
+        "fetch_ohlcv total: {} bars across all instruments",
+        all.len()
+    );
+    Ok(all)
 }
 
 /// Verify API key by listing datasets (lightweight metadata call).

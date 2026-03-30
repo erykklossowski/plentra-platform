@@ -204,10 +204,77 @@ pub async fn handler(
             }))
             .into_response()
         }
+        "databento_ohlcv" => {
+            let api_key = match config.databento_api_key {
+                Some(k) => k,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error": "DATABENTO_API_KEY not set"})),
+                    )
+                        .into_response()
+                }
+            };
+            let app_state = state.clone();
+            tokio::spawn(async move {
+                let today = Utc::now().date_naive();
+                let start_date = today - chrono::Duration::days(days);
+                match crate::fetchers::databento::fetch_ohlcv(&api_key, start_date, today).await {
+                    Err(e) => tracing::error!("OHLCV backfill failed: {}", e),
+                    Ok(bars) => {
+                        if let Some(ref pool) = app_state.db {
+                            let mut written = 0usize;
+                            for b in &bars {
+                                if crate::db::writer::upsert_fuel_ohlcv(pool, b)
+                                    .await
+                                    .is_ok()
+                                {
+                                    written += 1;
+                                }
+                            }
+                            tracing::info!(
+                                "OHLCV backfill: {}/{} bars written",
+                                written,
+                                bars.len()
+                            );
+                        }
+                    }
+                }
+            });
+            Json(json!({ "status": "ohlcv backfill started", "days": days })).into_response()
+        }
+        "recalculate_spreads" => {
+            let app_state = state.clone();
+            tokio::spawn(async move {
+                if let Some(ref pool) = app_state.db {
+                    let today = Utc::now().date_naive();
+                    let mut date = today - chrono::Duration::days(days);
+                    let mut success = 0usize;
+                    let mut skipped = 0usize;
+                    while date <= today {
+                        match crate::analytics::css::run_css(pool, date).await {
+                            Ok(_) => success += 1,
+                            Err(e) => {
+                                // Expected for weekends/holidays/missing data
+                                tracing::debug!("CSS skipped {}: {}", date, e);
+                                skipped += 1;
+                            }
+                        }
+                        date += chrono::Duration::days(1);
+                    }
+                    tracing::info!(
+                        "Spread recalc: {} calculated, {} skipped",
+                        success,
+                        skipped
+                    );
+                }
+            });
+            Json(json!({ "status": "recalculation started", "days": days })).into_response()
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, databento_debug, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, databento_debug, databento_ohlcv, recalculate_spreads, curtailment, reserves"})),
             )
                 .into_response()
         }

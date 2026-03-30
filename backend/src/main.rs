@@ -151,6 +151,36 @@ async fn main() {
                             ),
                         }
                     }
+
+                    // Daily OHLCV fetch + CSS calculation
+                    let today = chrono::Utc::now().date_naive();
+                    let yesterday = today - chrono::Duration::days(1);
+                    match fetchers::databento::fetch_ohlcv(api_key, yesterday, today).await {
+                        Err(e) => tracing::error!("Daily OHLCV fetch failed: {}", e),
+                        Ok(bars) => {
+                            for b in &bars {
+                                let _ =
+                                    crate::db::writer::upsert_fuel_ohlcv(pool, b).await;
+                            }
+                            tracing::info!(
+                                "Daily OHLCV: {} bars written for {}",
+                                bars.len(),
+                                yesterday
+                            );
+
+                            // Calculate CSS for yesterday
+                            match analytics::css::run_css(pool, yesterday).await {
+                                Ok(css) => tracing::info!(
+                                    "Daily CSS {}: {:.4} EUR/MWh",
+                                    yesterday,
+                                    css
+                                ),
+                                Err(e) => {
+                                    tracing::debug!("CSS skipped {}: {}", yesterday, e)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -160,6 +190,7 @@ async fn main() {
         .route("/health", get(routes::health::handler))
         .route("/api/fuels", get(routes::fuels::handler))
         .route("/api/spreads", get(routes::spreads::handler))
+        .route("/api/spreads/css", get(routes::spreads::get_css))
         .route("/api/summary", get(routes::summary::handler))
         .route("/api/residual", get(routes::residual::handler))
         .route("/api/prices", get(routes::prices::handler))

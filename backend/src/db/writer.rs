@@ -1,5 +1,7 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
+
+use super::models::FuelOhlcv;
 
 /// Write a single fuel price data point (daily close).
 /// Idempotent: duplicate (ts, ticker) rows are silently ignored.
@@ -202,6 +204,85 @@ pub async fn write_generation(
     .bind(value_mw)
     .bind(is_forecast)
     .bind(data_source)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Upsert a single OHLCV bar into fuel_ohlcv.
+pub async fn upsert_fuel_ohlcv(pool: &PgPool, r: &FuelOhlcv) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO fuel_ohlcv
+            (date, instrument_id, dataset, ticker, raw_symbol, unit,
+             open, high, low, close, volume)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT (date, instrument_id, dataset) DO UPDATE SET
+            raw_symbol = EXCLUDED.raw_symbol,
+            open       = EXCLUDED.open,
+            high       = EXCLUDED.high,
+            low        = EXCLUDED.low,
+            close      = EXCLUDED.close,
+            volume     = EXCLUDED.volume
+        "#,
+    )
+    .bind(r.date)
+    .bind(r.instrument_id)
+    .bind(&r.dataset)
+    .bind(&r.ticker)
+    .bind(&r.raw_symbol)
+    .bind(&r.unit)
+    .bind(r.open)
+    .bind(r.high)
+    .bind(r.low)
+    .bind(r.close)
+    .bind(r.volume)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Upsert a calculated spread (e.g. rolling 3-month CSS).
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_spread(
+    pool: &PgPool,
+    date: NaiveDate,
+    spread_type: &str,
+    value: f64,
+    power_avg: f64,
+    gas_avg: f64,
+    carbon_price: f64,
+    power_symbols: &[String],
+    gas_symbols: &[String],
+    carbon_symbol: &str,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO calculated_spreads
+            (date, spread_type, value,
+             power_avg, gas_avg, carbon_price,
+             power_symbols, gas_symbols, carbon_symbol)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        ON CONFLICT (date, spread_type) DO UPDATE SET
+            value         = EXCLUDED.value,
+            power_avg     = EXCLUDED.power_avg,
+            gas_avg       = EXCLUDED.gas_avg,
+            carbon_price  = EXCLUDED.carbon_price,
+            power_symbols = EXCLUDED.power_symbols,
+            gas_symbols   = EXCLUDED.gas_symbols,
+            carbon_symbol = EXCLUDED.carbon_symbol,
+            calculated_at = NOW()
+        "#,
+    )
+    .bind(date)
+    .bind(spread_type)
+    .bind(value)
+    .bind(power_avg)
+    .bind(gas_avg)
+    .bind(carbon_price)
+    .bind(power_symbols)
+    .bind(gas_symbols)
+    .bind(carbon_symbol)
     .execute(pool)
     .await?;
     Ok(())
