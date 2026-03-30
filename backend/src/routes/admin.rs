@@ -476,10 +476,59 @@ pub async fn handler(
             }))
             .into_response()
         }
+        "cleanup_sentinels" => {
+            // Databento encodes undefined prices as i64::MAX / 1e9 ≈ 9.22e9.
+            // Delete OHLCV rows where close is a sentinel, fix open/high/low in-place.
+            let deleted = sqlx::query_scalar::<_, i64>(
+                "WITH d AS (DELETE FROM fuel_ohlcv WHERE close > 1000000 RETURNING 1) SELECT COUNT(*) FROM d"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
+
+            let fixed_open = sqlx::query_scalar::<_, i64>(
+                "WITH u AS (UPDATE fuel_ohlcv SET open = close WHERE open > 1000000 RETURNING 1) SELECT COUNT(*) FROM u"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
+
+            let fixed_high = sqlx::query_scalar::<_, i64>(
+                "WITH u AS (UPDATE fuel_ohlcv SET high = close WHERE high > 1000000 RETURNING 1) SELECT COUNT(*) FROM u"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
+
+            let fixed_low = sqlx::query_scalar::<_, i64>(
+                "WITH u AS (UPDATE fuel_ohlcv SET low = close WHERE low > 1000000 RETURNING 1) SELECT COUNT(*) FROM u"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
+
+            // Also clean fuel_daily
+            let daily_deleted = sqlx::query_scalar::<_, i64>(
+                "WITH d AS (DELETE FROM fuel_daily WHERE close > 1000000 RETURNING 1) SELECT COUNT(*) FROM d"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0);
+
+            Json(json!({
+                "status": "done",
+                "fuel_ohlcv_rows_deleted": deleted,
+                "fuel_ohlcv_open_fixed": fixed_open,
+                "fuel_ohlcv_high_fixed": fixed_high,
+                "fuel_ohlcv_low_fixed": fixed_low,
+                "fuel_daily_rows_deleted": daily_deleted,
+            }))
+            .into_response()
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, pse_prices, entso_generation, sync_fuel_daily, recalculate_spreads, ohlcv_status, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, pse_prices, entso_generation, sync_fuel_daily, recalculate_spreads, cleanup_sentinels, ohlcv_status, curtailment, reserves"})),
             )
                 .into_response()
         }
