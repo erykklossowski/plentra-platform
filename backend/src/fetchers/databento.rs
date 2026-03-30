@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use databento::{
-    dbn::{decode::DbnMetadata, OhlcvMsg, Schema, SType, StatMsg},
+    dbn::{OhlcvMsg, Schema, SType, StatMsg},
     historical::timeseries::GetRangeParams,
     HistoricalClient,
 };
@@ -266,110 +266,183 @@ pub async fn fetch_today(
     results
 }
 
-/// Fetch daily OHLCV bars for all instruments over a date range.
-/// One FuelOhlcv per (date, instrument_id) — no aggregation.
-/// Missing dates (weekends, holidays) simply produce no record.
-pub async fn fetch_ohlcv(
+/// Fetch daily OHLCV bars for one exact raw symbol over a date range.
+/// Uses `SType::RawSymbol` — no parent resolution, fast single-instrument query.
+pub async fn fetch_ohlcv_symbol(
+    api_key: &str,
+    dataset: Dataset,
+    raw_symbol: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> anyhow::Result<Vec<FuelOhlcv>> {
+    let mut client = HistoricalClient::builder().key(api_key)?.build()?;
+
+    let mut decoder = client
+        .timeseries()
+        .get_range(
+            &GetRangeParams::builder()
+                .dataset(dataset)
+                .symbols(vec![raw_symbol])
+                .schema(Schema::Ohlcv1D)
+                .date_time_range(to_time_odt(start_date)..to_time_odt(end_date))
+                .stype_in(SType::RawSymbol)
+                .build(),
+        )
+        .await?;
+
+    let ticker = ticker_for_symbol(raw_symbol);
+    let unit = unit_for_symbol(raw_symbol);
+    let mut bars: Vec<FuelOhlcv> = Vec::new();
+
+    while let Some(msg) = decoder.decode_record::<OhlcvMsg>().await? {
+        let ts = DateTime::from_timestamp((msg.hd.ts_event / 1_000_000_000) as i64, 0)
+            .unwrap_or_else(Utc::now);
+
+        let close = msg.close_f64();
+        // Filter UNDEF_PRICE sentinel (~9.22e9) and invalid prices
+        if close <= 0.0 || close > 1_000_000.0 {
+            continue;
+        }
+
+        bars.push(FuelOhlcv {
+            date: ts.date_naive(),
+            instrument_id: msg.hd.instrument_id as i64,
+            dataset: dataset.as_str().to_string(),
+            ticker: ticker.clone(),
+            raw_symbol: raw_symbol.to_string(),
+            unit: unit.clone(),
+            open: msg.open_f64(),
+            high: msg.high_f64(),
+            low: msg.low_f64(),
+            close,
+            volume: msg.volume as i64,
+        });
+    }
+
+    tracing::info!("fetch_ohlcv_symbol {}: {} bars", raw_symbol, bars.len());
+    Ok(bars)
+}
+
+/// Generate all exact symbols needed for CSS/CDS over a date range,
+/// then fetch OHLCV bars for each via `SType::RawSymbol`.
+///
+/// For rolling 3-month spreads we need M+1, M+2, M+3 for every day in the
+/// range, so we generate symbols from (start_date + 1 month) through
+/// (end_date + 3 months).
+pub async fn fetch_ohlcv_for_css(
     api_key: &str,
     start_date: NaiveDate,
     end_date: NaiveDate,
 ) -> anyhow::Result<Vec<FuelOhlcv>> {
-    let mut all: Vec<FuelOhlcv> = Vec::new();
+    use crate::analytics::css::{add_months, month_to_ice_code};
 
-    for instrument_def in INSTRUMENTS {
-        tracing::info!(
-            "fetch_ohlcv: {} ({}) {} -> {} [{}]",
-            instrument_def.name,
-            instrument_def.symbol,
-            start_date,
-            end_date,
-            instrument_def.dataset
-        );
+    let sym_start = add_months(start_date, 1);
+    let sym_end = add_months(end_date, 3);
 
-        let mut client = HistoricalClient::builder().key(api_key)?.build()?;
+    let mut symbols: Vec<(Dataset, String, &str, &str)> = Vec::new();
 
-        let mut decoder = client
-            .timeseries()
-            .get_range(
-                &GetRangeParams::builder()
-                    .dataset(instrument_def.dataset)
-                    .symbols(vec![instrument_def.symbol])
-                    .schema(Schema::Ohlcv1D)
-                    .date_time_range(to_time_odt(start_date)..to_time_odt(end_date))
-                    .stype_in(SType::Parent)
-                    .build(),
-            )
-            .await?;
+    // Walk month by month from sym_start to sym_end
+    let mut cursor =
+        NaiveDate::from_ymd_opt(sym_start.year(), sym_start.month(), 1).unwrap();
+    let sym_end_month =
+        NaiveDate::from_ymd_opt(sym_end.year(), sym_end.month(), 1).unwrap();
 
-        let metadata = decoder.metadata().clone();
-        let mut count = 0usize;
+    while cursor <= sym_end_month {
+        let code = month_to_ice_code(cursor.month()).unwrap();
+        let yy = cursor.year() % 100;
 
-        while let Some(msg) = decoder.decode_record::<OhlcvMsg>().await? {
-            // ts_event is the start of the 1-day bar in nanoseconds
-            let ts = chrono::DateTime::from_timestamp(
-                (msg.hd.ts_event / 1_000_000_000) as i64,
-                0,
-            )
-            .unwrap_or_else(chrono::Utc::now);
+        // TFM monthly — NdexImpact (ICE Endex)
+        symbols.push((
+            Dataset::NdexImpact,
+            format!("TFM FM{}00{:02}!", code, yy),
+            "TTF",
+            "EUR/MWh",
+        ));
 
-            let date = ts.date_naive();
-            let instrument_id = msg.hd.instrument_id as i64;
+        // GAB monthly — NdexImpact (ICE Endex)
+        symbols.push((
+            Dataset::NdexImpact,
+            format!("GAB FM{}00{:02}!", code, yy),
+            "GAB",
+            "EUR/MWh",
+        ));
 
-            // Resolve raw_symbol from SymbolMap
-            // TsSymbolMap::get takes (time::Date, u32)
-            let time_date = time::Date::from_calendar_date(
-                date.year(),
-                time::Month::try_from(date.month() as u8).unwrap(),
-                date.day() as u8,
-            )
-            .ok();
-            let raw_symbol: String = metadata
-                .symbol_map()
-                .ok()
-                .and_then(|sm| {
-                    time_date.and_then(|td| {
-                        sm.get(td, msg.hd.instrument_id).map(|s| s.to_string())
-                    })
-                })
-                .unwrap_or_else(|| format!("UNKNOWN_{}", instrument_id));
+        // ATW monthly — IfeuImpact (ICE Futures Europe)
+        symbols.push((
+            Dataset::IfeuImpact,
+            format!("ATW FM{}00{:02}!", code, yy),
+            "ARA",
+            "USD/t",
+        ));
 
-            // Decode prices: int64 fixed-point, 1 unit = 1e-9
-            let open = msg.open as f64 / 1_000_000_000.0;
-            let high = msg.high as f64 / 1_000_000_000.0;
-            let low = msg.low as f64 / 1_000_000_000.0;
-            let close = msg.close as f64 / 1_000_000_000.0;
-
-            // Sanity check — reject sentinel and obviously wrong prices.
-            // Databento UNDEF_PRICE = i64::MAX → ~9.22e9 after /1e9 division.
-            if close <= 0.0 || close > 1_000_000.0 {
-                continue;
-            }
-
-            all.push(FuelOhlcv {
-                date,
-                instrument_id,
-                dataset: instrument_def.dataset.to_string(),
-                ticker: instrument_def.name.to_string(),
-                raw_symbol,
-                unit: instrument_def.unit.to_string(),
-                open,
-                high,
-                low,
-                close,
-                volume: msg.volume as i64,
-            });
-
-            count += 1;
-        }
-
-        tracing::info!("fetch_ohlcv {}: {} bars", instrument_def.name, count);
+        cursor = add_months(cursor, 1);
     }
 
+    // ECF: one December contract per year in the range
+    let first_year = start_date.year();
+    let last_year = add_months(end_date, 3).year();
+    for year in first_year..=last_year {
+        symbols.push((
+            Dataset::NdexImpact,
+            format!("ECF FMZ00{:02}!", year % 100),
+            "EUA",
+            "EUR/t",
+        ));
+    }
+
+    // Deduplicate
+    symbols.sort_by(|a, b| a.1.cmp(&b.1));
+    symbols.dedup_by(|a, b| a.1 == b.1);
+
     tracing::info!(
-        "fetch_ohlcv total: {} bars across all instruments",
-        all.len()
+        "fetch_ohlcv_for_css: fetching {} exact symbols for {} → {}",
+        symbols.len(),
+        start_date,
+        end_date
     );
+
+    let mut all: Vec<FuelOhlcv> = Vec::new();
+
+    for (dataset, raw_symbol, _ticker, _unit) in &symbols {
+        match fetch_ohlcv_symbol(api_key, *dataset, raw_symbol, start_date, end_date).await {
+            Ok(mut bars) => all.append(&mut bars),
+            Err(e) => {
+                // A missing symbol is expected (contract not yet listed, etc.)
+                tracing::debug!("Symbol {} not available: {}", raw_symbol, e);
+            }
+        }
+    }
+
+    tracing::info!("fetch_ohlcv_for_css total: {} bars", all.len());
     Ok(all)
+}
+
+/// Infer ticker from raw symbol prefix.
+fn ticker_for_symbol(raw: &str) -> String {
+    if raw.starts_with("TFM") {
+        "TTF".to_string()
+    } else if raw.starts_with("ECF") {
+        "EUA".to_string()
+    } else if raw.starts_with("ATW") {
+        "ARA".to_string()
+    } else if raw.starts_with("GAB") {
+        "GAB".to_string()
+    } else {
+        "UNKNOWN".to_string()
+    }
+}
+
+/// Infer unit from raw symbol prefix.
+fn unit_for_symbol(raw: &str) -> String {
+    if raw.starts_with("TFM") || raw.starts_with("GAB") {
+        "EUR/MWh".to_string()
+    } else if raw.starts_with("ECF") {
+        "EUR/t".to_string()
+    } else if raw.starts_with("ATW") {
+        "USD/t".to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Verify API key by listing datasets (lightweight metadata call).

@@ -155,7 +155,7 @@ async fn main() {
                     // Daily OHLCV fetch + CSS calculation
                     let today = chrono::Utc::now().date_naive();
                     let yesterday = today - chrono::Duration::days(1);
-                    match fetchers::databento::fetch_ohlcv(api_key, yesterday, today).await {
+                    match fetchers::databento::fetch_ohlcv_for_css(api_key, yesterday, today).await {
                         Err(e) => tracing::error!("Daily OHLCV fetch failed: {}", e),
                         Ok(bars) => {
                             for b in &bars {

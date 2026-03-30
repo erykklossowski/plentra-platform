@@ -16,17 +16,17 @@ pub fn get_ice_symbol(parent: &str, months_forward: u32, base: NaiveDate) -> Str
     let month_code =
         month_to_ice_code(target.month()).expect("month 1-12 always maps to an ICE code");
     let year_2d = target.year() % 100;
-    format!("{} FM{}{:04}!", parent, month_code, year_2d)
+    format!("{} FM{}00{:02}!", parent, month_code, year_2d)
 }
 
 /// ECF always uses the December contract for the current calendar year.
 /// get_ecf_symbol(2026-03-29) -> "ECF FMZ0026!"
 pub fn get_ecf_symbol(base: NaiveDate) -> String {
     let year_2d = base.year() % 100;
-    format!("ECF FMZ{:04}!", year_2d)
+    format!("ECF FMZ00{:02}!", year_2d)
 }
 
-fn month_to_ice_code(month: u32) -> Option<char> {
+pub fn month_to_ice_code(month: u32) -> Option<char> {
     match month {
         1 => Some('F'),
         2 => Some('G'),
@@ -46,7 +46,7 @@ fn month_to_ice_code(month: u32) -> Option<char> {
 
 /// Add N calendar months to a date.
 /// Day is clamped to the last valid day of the resulting month.
-fn add_months(date: NaiveDate, months: u32) -> NaiveDate {
+pub fn add_months(date: NaiveDate, months: u32) -> NaiveDate {
     let total = date.month0() + months;
     let year = date.year() + (total / 12) as i32;
     let month = (total % 12) + 1;

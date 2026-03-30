@@ -219,7 +219,7 @@ pub async fn handler(
                 // Use yesterday as end date — today's bars aren't available until after close
                 let yesterday = Utc::now().date_naive() - chrono::Duration::days(1);
                 let start_date = yesterday - chrono::Duration::days(days);
-                match crate::fetchers::databento::fetch_ohlcv(&api_key, start_date, yesterday).await {
+                match crate::fetchers::databento::fetch_ohlcv_for_css(&api_key, start_date, yesterday).await {
                     Err(e) => tracing::error!("OHLCV backfill failed: {}", e),
                     Ok(bars) => {
                         let mut written = 0usize;
