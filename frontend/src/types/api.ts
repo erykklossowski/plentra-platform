@@ -364,6 +364,29 @@ export interface PsePricesResponse {
   source: string;
 }
 
+export interface ChangepointEntry {
+  date: string;
+  index: number;
+  price_before: number;
+  price_after: number;
+  magnitude_pct: number;
+  direction: "up" | "down";
+}
+
+export interface ChangepointsResponse {
+  ticker: string;
+  source: string;
+  series_len: number;
+  series_start: string | null;
+  series_end: string | null;
+  algorithm: string;
+  changepoints: ChangepointEntry[];
+  series: Array<{ date: string; value: number }>;
+  status?: string;
+  min_required?: number;
+  message?: string;
+}
+
 // ─── Forecast (Phase 7) ───
 
 export interface FuelForecastData {

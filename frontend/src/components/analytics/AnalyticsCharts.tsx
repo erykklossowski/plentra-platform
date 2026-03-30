@@ -6,6 +6,7 @@ import type {
   SeasonalityPoint,
   PositiveDaysPoint,
   EveningDecompositionPoint,
+  ChangepointsResponse,
 } from "@/types/api";
 
 const SpreadHistoryChart = dynamic(
@@ -24,6 +25,10 @@ const EveningDecompositionChart = dynamic(
   () => import("@/components/analytics/EveningDecompositionChart"),
   { ssr: false }
 );
+const ChangepointChart = dynamic(
+  () => import("@/components/analytics/ChangepointChart"),
+  { ssr: false }
+);
 
 export function SpreadHistoryChartWrapper({ data }: { data: SpreadHistoryPoint[] }) {
   return <SpreadHistoryChart data={data} />;
@@ -39,4 +44,8 @@ export function PositiveDaysChartWrapper({ data }: { data: PositiveDaysPoint[] }
 
 export function EveningDecompositionChartWrapper({ data }: { data: EveningDecompositionPoint[] }) {
   return <EveningDecompositionChart data={data} />;
+}
+
+export function ChangepointChartWrapper({ data }: { data: ChangepointsResponse | null }) {
+  return <ChangepointChart data={data} />;
 }

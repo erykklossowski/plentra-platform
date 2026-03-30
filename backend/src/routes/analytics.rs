@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::Json;
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use serde_json::{json, Value};
 
 use crate::AppState;
@@ -323,6 +323,115 @@ pub async fn get_evening_decomposition(
                 "avg_css_contribution_pct": avg_css_pct,
             },
             "decomposition": decomposition,
+        })),
+    )
+}
+
+// ──────────────────────── /api/analytics/changepoints ────────────────────────
+// ARGPCP changepoint detection on Polish SDAC DA prices (last 90 days).
+
+pub async fn get_price_changepoints(
+    State(state): State<Arc<AppState>>,
+) -> (HeaderMap, Json<Value>) {
+    let pool = match &state.db {
+        Some(p) => p,
+        None => {
+            return (
+                headers_cached(),
+                Json(json!({"error": "db not connected"})),
+            )
+        }
+    };
+
+    // Fetch daily average SDAC — aggregate hourly to daily for cleaner signal
+    let rows = sqlx::query_as::<_, (Option<NaiveDate>, Option<f64>, i64)>(
+        r#"SELECT
+               ts::date            AS day,
+               AVG(csdac_pln)      AS avg_sdac,
+               COUNT(*)            AS hour_count
+           FROM price_hourly
+           WHERE source    = 'PSE'
+             AND product   = 'DA'
+             AND csdac_pln IS NOT NULL
+             AND ts >= NOW() - INTERVAL '90 days'
+           GROUP BY ts::date
+           HAVING COUNT(*) >= 20
+           ORDER BY ts::date ASC"#,
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let dates: Vec<NaiveDate> = rows.iter().filter_map(|(d, _, _)| *d).collect();
+    let series: Vec<f64> = rows.iter().filter_map(|(_, v, _)| *v).collect();
+
+    if series.len() < 14 {
+        return (
+            headers_cached(),
+            Json(json!({
+                "status":       "insufficient_data",
+                "series_len":   series.len(),
+                "min_required": 14,
+                "message":      "Need at least 14 days of SDAC data. Run PSE backfill.",
+                "changepoints": [],
+                "series":       [],
+            })),
+        );
+    }
+
+    // Run ARGPCP — reuse existing detect_changepoints from analytics module
+    let cp_result = crate::analytics::changepoint::detect_changepoints(&series, &dates);
+
+    let changepoint_indices = match &cp_result {
+        Ok(r) => r.changepoints.clone(),
+        Err(_) => vec![],
+    };
+
+    // Annotate each changepoint with before/after averages
+    let annotated: Vec<Value> = changepoint_indices
+        .iter()
+        .map(|&idx| {
+            let before = if idx >= 7 {
+                series[idx - 7..idx].iter().sum::<f64>() / 7.0
+            } else {
+                series[..idx].iter().sum::<f64>() / idx.max(1) as f64
+            };
+            let after_end = (idx + 7).min(series.len());
+            let after = if after_end > idx {
+                series[idx..after_end].iter().sum::<f64>() / (after_end - idx) as f64
+            } else {
+                series[idx]
+            };
+            let magnitude_pct = ((after - before) / before.abs().max(1.0) * 100.0).round();
+
+            json!({
+                "date":          dates[idx].to_string(),
+                "index":         idx,
+                "price_before":  round2(before),
+                "price_after":   round2(after),
+                "magnitude_pct": magnitude_pct,
+                "direction":     if after > before { "up" } else { "down" },
+            })
+        })
+        .collect();
+
+    let series_json: Vec<Value> = dates
+        .iter()
+        .zip(series.iter())
+        .map(|(d, v)| json!({ "date": d.to_string(), "value": round2(*v) }))
+        .collect();
+
+    (
+        headers_cached(),
+        Json(json!({
+            "ticker":       "SDAC_PLN",
+            "source":       "PSE price_hourly (csdac_pln)",
+            "series_len":   series.len(),
+            "series_start": dates.first().map(|d| d.to_string()),
+            "series_end":   dates.last().map(|d| d.to_string()),
+            "algorithm":    "ARGPCP (Autoregressive Gaussian Process)",
+            "changepoints": annotated,
+            "series":       series_json,
         })),
     )
 }

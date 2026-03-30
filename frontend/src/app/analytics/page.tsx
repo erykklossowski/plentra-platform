@@ -1,25 +1,29 @@
-import { getSpreadsAnalytics, getEveningAnalytics } from "@/lib/api";
+import { getSpreadsAnalytics, getEveningAnalytics, getChangepoints } from "@/lib/api";
 import {
   SpreadHistoryChartWrapper as SpreadHistoryChart,
   SeasonalityChartWrapper as SeasonalityChart,
   PositiveDaysChartWrapper as PositiveDaysChart,
   EveningDecompositionChartWrapper as EveningDecompositionChart,
+  ChangepointChartWrapper as ChangepointChart,
 } from "@/components/analytics/AnalyticsCharts";
 import type {
   SpreadsAnalyticsResponse,
   EveningAnalyticsResponse,
+  ChangepointsResponse,
 } from "@/types/api";
 
 export const revalidate = 900;
 
 export default async function AnalyticsPage() {
-  const [spreadsResult, eveningResult] = await Promise.allSettled([
+  const [spreadsResult, eveningResult, changepointsResult] = await Promise.allSettled([
     getSpreadsAnalytics(),
     getEveningAnalytics(),
+    getChangepoints(),
   ]);
 
   const spreads = spreadsResult.status === "fulfilled" ? spreadsResult.value : null;
   const evening = eveningResult.status === "fulfilled" ? eveningResult.value : null;
+  const changepoints = changepointsResult.status === "fulfilled" ? changepointsResult.value : null;
 
   return (
     <div className="p-8 space-y-12">
@@ -29,14 +33,17 @@ export default async function AnalyticsPage() {
           Analytics
         </h1>
         <p className="text-sm text-on-surface-variant mt-1">
-          Analiza spreadów CSS/CDS oraz dekompozycja ceny wieczornej DA
+          Analiza spreadów CSS/CDS, wykrywanie zmian strukturalnych SDAC oraz dekompozycja ceny wieczornej
         </p>
       </div>
 
       {/* Section A: CSS/CDS Analytics */}
       <SpreadAnalyticsSection data={spreads} />
 
-      {/* Section B: Evening Decomposition */}
+      {/* Section B: SDAC Changepoint Detection */}
+      <ChangepointSection data={changepoints} />
+
+      {/* Section C: Evening Decomposition */}
       <EveningDecompositionSection data={evening} />
     </div>
   );
@@ -137,7 +144,59 @@ function SpreadAnalyticsSection({ data }: { data: SpreadsAnalyticsResponse | nul
   );
 }
 
-/* ─── Section B: Evening Decomposition ─── */
+/* ─── Section B: SDAC Changepoint Detection ─── */
+
+function ChangepointSection({ data }: { data: ChangepointsResponse | null }) {
+  if (!data) {
+    return <EmptyState icon="monitoring" message="Changepoint detection unavailable" />;
+  }
+
+  const cpCount = data.changepoints?.length ?? 0;
+  const latest = data.changepoints?.at(-1);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="font-headline text-lg font-bold text-on-surface">
+          Polska Cena DA — Wykrywanie Zmian Strukturalnych
+        </h2>
+        <p className="text-[10px] uppercase tracking-widest text-on-surface-variant mt-1">
+          ARGPCP · SDAC PLN/MWh · ostatnie 90 dni
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        <KpiCard
+          label="Wykryte zmiany"
+          value={cpCount}
+          sub="ostatnie 90 dni"
+          unit=""
+          positive={null}
+        />
+        {latest && (
+          <KpiCard
+            label="Ostatnia zmiana"
+            value={Math.abs(latest.magnitude_pct)}
+            sub={`${latest.date} — ${latest.price_before.toFixed(0)} → ${latest.price_after.toFixed(0)} PLN`}
+            unit={`% ${latest.direction === "up" ? "\u2191" : "\u2193"}`}
+            positive={latest.direction === "up"}
+          />
+        )}
+        <KpiCard
+          label="Seria"
+          value={data.series_len}
+          sub={data.series_start && data.series_end ? `${data.series_start} → ${data.series_end}` : undefined}
+          unit="dni"
+          positive={null}
+        />
+      </div>
+
+      <ChangepointChart data={data} />
+    </div>
+  );
+}
+
+/* ─── Section C: Evening Decomposition ─── */
 
 function EveningDecompositionSection({ data }: { data: EveningAnalyticsResponse | null }) {
   if (!data || data.decomposition.length === 0) {
