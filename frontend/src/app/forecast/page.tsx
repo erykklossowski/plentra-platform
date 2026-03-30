@@ -126,21 +126,6 @@ export default async function ForecastPage() {
         <ChangepointAlerts alert={data.changepoint_alerts ?? null} />
       </div>
 
-      {/* Methodology */}
-      {data.methodology && (
-        <div className="bg-surface-container-lowest p-4 rounded-xl">
-          <p className="text-[10px] uppercase tracking-widest text-on-surface-variant mb-2">
-            Methodology
-          </p>
-          <p className="text-xs text-on-surface-variant">
-            Fuel forecasts use ETS (Exponential Smoothing) via the augurs Rust
-            library. Price decomposition uses MSTL (Multiple
-            Seasonal-Trend Decomposition). Structural breaks detected via
-            Autoregressive Gaussian Process Changepoint Detection (ARGPCP). OZE
-            and weather integration planned for Phase 8.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

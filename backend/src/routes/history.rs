@@ -72,20 +72,21 @@ pub async fn fuels_handler(
         None => return (headers_cached(), Json(empty_history(ticker, resolution, from, &to))),
     };
 
-    let rows = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, Option<f64>, Option<f64>, Option<f64>)>(
-        r#"SELECT
-               time_bucket($1::interval, ts) AS bucket,
-               AVG(close)  AS avg_val,
-               MIN(close)  AS min_val,
-               MAX(close)  AS max_val
-           FROM fuel_daily
-           WHERE ticker = $2
-             AND ts >= $3::date
-             AND ts <= $4::date
-           GROUP BY bucket
-           ORDER BY bucket ASC"#,
+    // Query fuel_ohlcv: pick the highest-volume contract per date for front-month price
+    let rows = sqlx::query_as::<_, (chrono::NaiveDate, f64)>(
+        r#"
+        SELECT DISTINCT ON (date)
+            date, close
+        FROM fuel_ohlcv
+        WHERE ticker = $1
+          AND date >= $2::date
+          AND date <= $3::date
+          AND close > 0
+          AND close < 1000000
+          AND volume > 0
+        ORDER BY date ASC, volume DESC
+        "#,
     )
-    .bind(bucket)
     .bind(ticker)
     .bind(from)
     .bind(to.as_str())
@@ -95,12 +96,12 @@ pub async fn fuels_handler(
 
     let points: Vec<Value> = rows
         .iter()
-        .map(|(ts, avg, min, max)| {
+        .map(|(date, close)| {
             json!({
-                "ts": ts.map(|t| t.to_rfc3339()),
-                "avg": avg.map(round2),
-                "min": min.map(round2),
-                "max": max.map(round2),
+                "ts": date.and_hms_opt(17, 30, 0).unwrap().and_utc().to_rfc3339(),
+                "avg": round2(*close),
+                "min": round2(*close),
+                "max": round2(*close),
             })
         })
         .collect();

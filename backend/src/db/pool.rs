@@ -21,6 +21,8 @@ pub async fn connect(database_url: &str) -> anyhow::Result<PgPool> {
 
 async fn check_data_integrity(pool: &PgPool) {
     let tables = [
+        "fuel_ohlcv",
+        "calculated_spreads",
         "fuel_daily",
         "reserve_prices_hourly",
         "curtailment_15min",

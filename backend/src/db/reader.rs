@@ -45,17 +45,25 @@ pub async fn get_latest_fuel_price(
 }
 
 /// Most recent N days of fuel close prices for sparkline rendering.
+/// Reads from fuel_ohlcv, picking the highest-volume contract per date.
 pub async fn get_fuel_sparkline(
     pool: &PgPool,
     ticker: &str,
     days: i64,
 ) -> anyhow::Result<Vec<f64>> {
     let rows: Vec<(f64,)> = sqlx::query_as(
-        "SELECT close
-         FROM fuel_daily
-         WHERE ticker = $1
-           AND ts >= NOW() - make_interval(days => $2)
-         ORDER BY ts ASC",
+        r#"
+        SELECT close FROM (
+            SELECT DISTINCT ON (date) date, close
+            FROM fuel_ohlcv
+            WHERE ticker = $1
+              AND date >= CURRENT_DATE - make_interval(days => $2)
+              AND close > 0 AND close < 1000000
+              AND volume > 0
+            ORDER BY date ASC, volume DESC
+        ) sub
+        ORDER BY date ASC
+        "#,
     )
     .bind(ticker)
     .bind(days as i32)
