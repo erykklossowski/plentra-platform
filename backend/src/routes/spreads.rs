@@ -56,15 +56,33 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
         return (headers, Json(cached.data));
     }
 
-    // Get fuel data from cache, stale cache, or DB fallback
-    let fuel_value = if let Some(cached) = state.cache.get("fuels") {
-        cached.data
-    } else if let Some(stale) = state.cache.get_stale("fuels") {
-        stale.data
-    } else if let Some(pool) = &state.db {
-        match crate::db::reader::get_cached_response(pool, "fuels").await {
-            Ok(Some(v)) => v,
-            _ => {
+    // Try to build spreads from calculated_spreads (forward-looking DB data)
+    let db_spread = if let Some(pool) = &state.db {
+        build_spread_from_db(pool).await
+    } else {
+        None
+    };
+
+    let spread_data = if let Some(sd) = db_spread {
+        sd
+    } else {
+        // Fallback: compute inline from fuel spot prices (old method)
+        let fuel_value = if let Some(cached) = state.cache.get("fuels") {
+            Some(cached.data)
+        } else if let Some(stale) = state.cache.get_stale("fuels") {
+            Some(stale.data)
+        } else if let Some(pool) = &state.db {
+            crate::db::reader::get_cached_response(pool, "fuels")
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+
+        match fuel_value.and_then(|v| serde_json::from_value::<FuelData>(v).ok()) {
+            Some(fuel) => build_spread_from_fuel(&fuel),
+            None => {
                 if let Some(data) = db_fallback(&state, CACHE_KEY).await {
                     return (headers, Json(data));
                 }
@@ -84,73 +102,6 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
                 );
             }
         }
-    } else {
-        return (
-            headers,
-            Json(serde_json::json!({
-                "data_status": "unavailable",
-                "message": "Spread data temporarily unavailable",
-                "css_spot": null,
-                "cds_spot_eta42": null,
-                "cds_spot_eta34": null,
-                "dispatch_signal": "UNKNOWN",
-                "history_30d": [],
-                "fetched_at": Utc::now().to_rfc3339(),
-                "stale": true,
-            })),
-        );
-    };
-
-    let fuel: FuelData = serde_json::from_value(fuel_value).unwrap();
-
-    let css_spot = round2(calculate_css(RDN_EUR_MWH, fuel.ttf_eur_mwh, fuel.eua_eur_tonne));
-    let cds_spot_eta42 =
-        round2(calculate_cds(RDN_EUR_MWH, fuel.ara_usd_tonne, fuel.eua_eur_tonne, 0.42));
-    let cds_spot_eta34 =
-        round2(calculate_cds(RDN_EUR_MWH, fuel.ara_usd_tonne, fuel.eua_eur_tonne, 0.34));
-
-    // Build 30-day history
-    let len = fuel
-        .ttf_history_30d
-        .len()
-        .min(fuel.ara_history_30d.len())
-        .min(fuel.eua_history_30d.len());
-    let history: Vec<SpreadHistoryEntry> = (0..len)
-        .map(|i| {
-            let ttf = fuel.ttf_history_30d[i];
-            let ara = fuel.ara_history_30d[i];
-            let eua = fuel.eua_history_30d[i];
-            SpreadHistoryEntry {
-                date: format!("day-{}", i + 1), // Phase 1: simplified date labels
-                css: round2(calculate_css(RDN_EUR_MWH, ttf, eua)),
-                cds_42: round2(calculate_cds(RDN_EUR_MWH, ara, eua, 0.42)),
-            }
-        })
-        .collect();
-
-    // Calculate MoM percentage changes from history arrays
-    let css_history: Vec<f64> = history.iter().map(|h| h.css).collect();
-    let cds_history: Vec<f64> = history.iter().map(|h| h.cds_42).collect();
-    let css_pct_change = crate::fetchers::databento::mom_delta_pct(&css_history);
-    let cds_pct_change = crate::fetchers::databento::mom_delta_pct(&cds_history);
-
-    let carbon_impact = round2(-fuel.eua_eur_tonne * 0.202);
-
-    let spread_data = SpreadData {
-        css_spot,
-        css_spot_pct_change: css_pct_change,
-        cds_spot_eta34,
-        cds_spot_eta42,
-        cds_spot_pct_change: cds_pct_change,
-        css_term_y1: round2(css_spot * 0.95), // approximate term value
-        cds_term_y1: None,
-        baseload_profitability_eur_mwh: round2(css_spot.max(0.0)),
-        peak_load_advantage_eur_mwh: round2(css_spot * 1.4), // peak premium estimate
-        carbon_impact_factor: carbon_impact,
-        dispatch_signal: dispatch_signal(css_spot, cds_spot_eta42).to_string(),
-        history_30d: history,
-        fetched_at: Utc::now().to_rfc3339(),
-        stale: None,
     };
 
     let value = serde_json::to_value(&spread_data).unwrap();
@@ -169,6 +120,139 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
     }
 
     (headers, Json(value))
+}
+
+/// Build SpreadData from calculated_spreads table (forward-looking CSS + CDS).
+async fn build_spread_from_db(pool: &sqlx::PgPool) -> Option<SpreadData> {
+    // Fetch last 30 days of CSS and CDS
+    let rows = sqlx::query_as::<_, (chrono::NaiveDate, String, f64, f64)>(
+        r#"
+        SELECT date, spread_type, value, carbon_price
+        FROM calculated_spreads
+        WHERE date >= CURRENT_DATE - INTERVAL '30 days'
+          AND spread_type IN ('rolling_3m_css', 'rolling_3m_cds')
+        ORDER BY date ASC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .ok()?;
+
+    if rows.is_empty() {
+        return None;
+    }
+
+    // Pivot into per-date map
+    let mut date_map: std::collections::BTreeMap<
+        chrono::NaiveDate,
+        (Option<f64>, Option<f64>, Option<f64>),
+    > = std::collections::BTreeMap::new();
+    for (date, spread_type, value, carbon_price) in &rows {
+        let entry = date_map.entry(*date).or_insert((None, None, None));
+        match spread_type.as_str() {
+            "rolling_3m_css" => {
+                entry.0 = Some(*value);
+                entry.2 = Some(*carbon_price);
+            }
+            "rolling_3m_cds" => entry.1 = Some(*value),
+            _ => {}
+        }
+    }
+
+    let history: Vec<SpreadHistoryEntry> = date_map
+        .iter()
+        .filter_map(|(date, (css, cds, _))| {
+            Some(SpreadHistoryEntry {
+                date: date.to_string(),
+                css: round2((*css)?),
+                cds_42: round2(cds.unwrap_or(0.0)),
+            })
+        })
+        .collect();
+
+    if history.is_empty() {
+        return None;
+    }
+
+    let latest_css = history.last().map(|h| h.css).unwrap_or(0.0);
+    let latest_cds = history.last().map(|h| h.cds_42).unwrap_or(0.0);
+
+    // MoM changes from 30-day series
+    let css_series: Vec<f64> = history.iter().map(|h| h.css).collect();
+    let cds_series: Vec<f64> = history.iter().map(|h| h.cds_42).collect();
+    let css_pct = crate::fetchers::databento::mom_delta_pct(&css_series);
+    let cds_pct = crate::fetchers::databento::mom_delta_pct(&cds_series);
+
+    // Carbon impact from latest forward EUA price
+    let latest_carbon = date_map.values().rev().find_map(|(_, _, cp)| *cp).unwrap_or(0.0);
+    let carbon_impact = round2(crate::analytics::css::carbon_impact_factor(latest_carbon));
+
+    Some(SpreadData {
+        css_spot: round2(latest_css),
+        css_spot_pct_change: css_pct,
+        cds_spot_eta34: round2(latest_cds * 0.81), // approximate eta34/eta42 ratio
+        cds_spot_eta42: round2(latest_cds),
+        cds_spot_pct_change: cds_pct,
+        css_term_y1: round2(latest_css),
+        cds_term_y1: Some(round2(latest_cds)),
+        baseload_profitability_eur_mwh: round2(latest_css.max(0.0)),
+        peak_load_advantage_eur_mwh: round2(latest_css * 1.4),
+        carbon_impact_factor: carbon_impact,
+        dispatch_signal: dispatch_signal(latest_css, latest_cds).to_string(),
+        history_30d: history,
+        fetched_at: Utc::now().to_rfc3339(),
+        stale: None,
+    })
+}
+
+/// Fallback: build SpreadData from spot fuel prices (old inline method).
+fn build_spread_from_fuel(fuel: &FuelData) -> SpreadData {
+    let css_spot = round2(calculate_css(RDN_EUR_MWH, fuel.ttf_eur_mwh, fuel.eua_eur_tonne));
+    let cds_spot_eta42 =
+        round2(calculate_cds(RDN_EUR_MWH, fuel.ara_usd_tonne, fuel.eua_eur_tonne, 0.42));
+    let cds_spot_eta34 =
+        round2(calculate_cds(RDN_EUR_MWH, fuel.ara_usd_tonne, fuel.eua_eur_tonne, 0.34));
+
+    let len = fuel
+        .ttf_history_30d
+        .len()
+        .min(fuel.ara_history_30d.len())
+        .min(fuel.eua_history_30d.len());
+    let history: Vec<SpreadHistoryEntry> = (0..len)
+        .map(|i| {
+            let ttf = fuel.ttf_history_30d[i];
+            let ara = fuel.ara_history_30d[i];
+            let eua = fuel.eua_history_30d[i];
+            SpreadHistoryEntry {
+                date: format!("day-{}", i + 1),
+                css: round2(calculate_css(RDN_EUR_MWH, ttf, eua)),
+                cds_42: round2(calculate_cds(RDN_EUR_MWH, ara, eua, 0.42)),
+            }
+        })
+        .collect();
+
+    let css_history: Vec<f64> = history.iter().map(|h| h.css).collect();
+    let cds_history: Vec<f64> = history.iter().map(|h| h.cds_42).collect();
+    let css_pct = crate::fetchers::databento::mom_delta_pct(&css_history);
+    let cds_pct = crate::fetchers::databento::mom_delta_pct(&cds_history);
+    let carbon_impact = round2(-fuel.eua_eur_tonne * 0.202);
+
+    SpreadData {
+        css_spot,
+        css_spot_pct_change: css_pct,
+        cds_spot_eta34,
+        cds_spot_eta42,
+        cds_spot_pct_change: cds_pct,
+        css_term_y1: round2(css_spot * 0.95),
+        cds_term_y1: None,
+        baseload_profitability_eur_mwh: round2(css_spot.max(0.0)),
+        peak_load_advantage_eur_mwh: round2(css_spot * 1.4),
+        carbon_impact_factor: carbon_impact,
+        dispatch_signal: dispatch_signal(css_spot, cds_spot_eta42).to_string(),
+        history_30d: history,
+        fetched_at: Utc::now().to_rfc3339(),
+        stale: None,
+    }
 }
 
 async fn db_fallback(state: &Arc<AppState>, key: &str) -> Option<serde_json::Value> {

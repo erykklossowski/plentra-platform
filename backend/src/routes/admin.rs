@@ -244,23 +244,33 @@ pub async fn handler(
                 if let Some(ref pool) = app_state.db {
                     let today = Utc::now().date_naive();
                     let mut date = today - chrono::Duration::days(days);
-                    let mut success = 0usize;
+                    let mut css_ok = 0usize;
+                    let mut cds_ok = 0usize;
                     let mut skipped = 0usize;
                     while date <= today {
-                        match crate::analytics::css::run_css(pool, date).await {
-                            Ok(_) => success += 1,
-                            Err(e) => {
-                                // Expected for weekends/holidays/missing data
-                                tracing::debug!("CSS skipped {}: {}", date, e);
-                                skipped += 1;
-                            }
+                        let css_res = crate::analytics::css::run_css(pool, date).await;
+                        let cds_res = crate::analytics::css::run_cds(pool, date).await;
+                        match (&css_res, &cds_res) {
+                            (Ok(_), _) => css_ok += 1,
+                            _ => {}
+                        }
+                        match (&cds_res, &css_res) {
+                            (Ok(_), _) => cds_ok += 1,
+                            _ => {}
+                        }
+                        if css_res.is_err() && cds_res.is_err() {
+                            tracing::debug!("Spreads skipped {}: CSS={}, CDS={}",
+                                date,
+                                css_res.unwrap_err(),
+                                cds_res.unwrap_err(),
+                            );
+                            skipped += 1;
                         }
                         date += chrono::Duration::days(1);
                     }
                     tracing::info!(
-                        "Spread recalc: {} calculated, {} skipped",
-                        success,
-                        skipped
+                        "Spread recalc: CSS={}, CDS={}, skipped={}",
+                        css_ok, cds_ok, skipped
                     );
                 }
             });

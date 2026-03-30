@@ -168,7 +168,7 @@ async fn main() {
                                 yesterday
                             );
 
-                            // Calculate CSS for yesterday
+                            // Calculate CSS + CDS for yesterday
                             match analytics::css::run_css(pool, yesterday).await {
                                 Ok(css) => tracing::info!(
                                     "Daily CSS {}: {:.4} EUR/MWh",
@@ -177,6 +177,16 @@ async fn main() {
                                 ),
                                 Err(e) => {
                                     tracing::debug!("CSS skipped {}: {}", yesterday, e)
+                                }
+                            }
+                            match analytics::css::run_cds(pool, yesterday).await {
+                                Ok(cds) => tracing::info!(
+                                    "Daily CDS {}: {:.4} EUR/MWh",
+                                    yesterday,
+                                    cds
+                                ),
+                                Err(e) => {
+                                    tracing::debug!("CDS skipped {}: {}", yesterday, e)
                                 }
                             }
                         }

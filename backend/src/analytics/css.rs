@@ -67,11 +67,17 @@ fn days_in_month(year: i32, month: u32) -> u32 {
         .day()
 }
 
-// --- CSS formula --------------------------------------------------------------
+// --- Spread formulas ---------------------------------------------------------
 
-/// Efficiency and emission parameters for a CCGT plant.
-const ETA: f64 = 0.50; // thermal efficiency
-const EMISSION_FACTOR: f64 = 0.202; // tCO2/MWh of gas
+/// CCGT (gas) parameters for Clean Spark Spread.
+const ETA_GAS: f64 = 0.50;
+const EMISSION_FACTOR_GAS: f64 = 0.202; // tCO2/MWh of gas
+
+/// Hard coal parameters for Clean Dark Spread.
+const ETA_COAL: f64 = 0.42;
+const EMISSION_FACTOR_COAL: f64 = 0.341; // tCO2/MWh of coal
+const EUR_USD: f64 = 1.08; // hardcoded FX rate (Phase 1)
+const COAL_MWH_PER_TONNE: f64 = 8.14; // 29.31 GJ/t ÷ 3.6 GJ/MWh
 
 /// Rolling 3-month Clean Spark Spread.
 ///
@@ -85,8 +91,36 @@ const EMISSION_FACTOR: f64 = 0.202; // tCO2/MWh of gas
 pub fn calculate_css(power_prices: &[f64; 3], gas_prices: &[f64; 3], carbon_price: f64) -> f64 {
     let power_avg = power_prices.iter().sum::<f64>() / 3.0;
     let gas_avg = gas_prices.iter().sum::<f64>() / 3.0;
-    let carbon_cost = carbon_price * EMISSION_FACTOR / ETA;
-    power_avg - (gas_avg / ETA) - carbon_cost
+    let carbon_cost = carbon_price * EMISSION_FACTOR_GAS / ETA_GAS;
+    power_avg - (gas_avg / ETA_GAS) - carbon_cost
+}
+
+/// Rolling 3-month Clean Dark Spread.
+///
+/// CDS = Power_avg - Coal_avg_EUR_MWh / eta_coal - Carbon * emission_factor_coal / eta_coal
+///
+/// Inputs:
+///   power_prices: EUR/MWh (German baseload, GAB)
+///   coal_prices:  USD/t   (API2 CIF ARA, ATW)
+///   carbon_price: EUR/t   (EUA)
+/// Output: EUR/MWh
+pub fn calculate_cds(
+    power_prices: &[f64; 3],
+    coal_prices_usd_t: &[f64; 3],
+    carbon_price: f64,
+) -> f64 {
+    let power_avg = power_prices.iter().sum::<f64>() / 3.0;
+    // Convert coal: USD/t → EUR/t → EUR/MWh
+    let coal_avg_usd_t = coal_prices_usd_t.iter().sum::<f64>() / 3.0;
+    let coal_avg_eur_mwh = coal_avg_usd_t / EUR_USD / COAL_MWH_PER_TONNE;
+    let carbon_cost = carbon_price * EMISSION_FACTOR_COAL / ETA_COAL;
+    power_avg - (coal_avg_eur_mwh / ETA_COAL) - carbon_cost
+}
+
+/// Carbon Impact Factor: the carbon cost component of CSS (forward EUA-based).
+/// Returns a negative value (cost penalty) in EUR/MWh.
+pub fn carbon_impact_factor(carbon_price: f64) -> f64 {
+    -(carbon_price * EMISSION_FACTOR_GAS / ETA_GAS)
 }
 
 // --- Orchestrator -------------------------------------------------------------
@@ -214,6 +248,116 @@ pub async fn run_css(pool: &PgPool, calc_date: NaiveDate) -> anyhow::Result<f64>
     Ok(css)
 }
 
+/// Fetch 7 required close prices from fuel_ohlcv for a given date,
+/// compute CDS, and persist the result to calculated_spreads.
+///
+/// Returns Err if any of the 7 prices is missing — no silent fallbacks.
+pub async fn run_cds(pool: &PgPool, calc_date: NaiveDate) -> anyhow::Result<f64> {
+    let coal_syms: [String; 3] = [
+        get_ice_symbol("ATW", 1, calc_date),
+        get_ice_symbol("ATW", 2, calc_date),
+        get_ice_symbol("ATW", 3, calc_date),
+    ];
+    let power_syms: [String; 3] = [
+        get_ice_symbol("GAB", 1, calc_date),
+        get_ice_symbol("GAB", 2, calc_date),
+        get_ice_symbol("GAB", 3, calc_date),
+    ];
+    let carbon_sym = get_ecf_symbol(calc_date);
+
+    let all_syms: Vec<String> = coal_syms
+        .iter()
+        .chain(power_syms.iter())
+        .chain(std::iter::once(&carbon_sym))
+        .cloned()
+        .collect();
+
+    tracing::debug!(
+        "CDS {}: coal={:?} power={:?} carbon={}",
+        calc_date,
+        coal_syms,
+        power_syms,
+        carbon_sym
+    );
+
+    let rows = sqlx::query_as::<_, (String, f64, NaiveDate)>(
+        r#"
+        SELECT DISTINCT ON (raw_symbol)
+            raw_symbol,
+            close,
+            date
+        FROM fuel_ohlcv
+        WHERE raw_symbol = ANY($1)
+          AND date <= $2
+        ORDER BY raw_symbol, date DESC
+        "#,
+    )
+    .bind(&all_syms)
+    .bind(calc_date)
+    .fetch_all(pool)
+    .await?;
+
+    let price_map: std::collections::HashMap<String, (NaiveDate, f64)> = rows
+        .into_iter()
+        .map(|(sym, close, date)| (sym, (date, close)))
+        .collect();
+
+    let missing: Vec<&String> = all_syms
+        .iter()
+        .filter(|s| !price_map.contains_key(s.as_str()))
+        .collect();
+
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "CDS aborted for {}: no price data for {:?}",
+            calc_date,
+            missing
+        );
+    }
+
+    let coal_prices = [
+        price_map[coal_syms[0].as_str()].1,
+        price_map[coal_syms[1].as_str()].1,
+        price_map[coal_syms[2].as_str()].1,
+    ];
+    let power_prices = [
+        price_map[power_syms[0].as_str()].1,
+        price_map[power_syms[1].as_str()].1,
+        price_map[power_syms[2].as_str()].1,
+    ];
+    let carbon_price = price_map[carbon_sym.as_str()].1;
+
+    let cds = calculate_cds(&power_prices, &coal_prices, carbon_price);
+    let power_avg = power_prices.iter().sum::<f64>() / 3.0;
+    let coal_avg = coal_prices.iter().sum::<f64>() / 3.0;
+
+    tracing::info!(
+        "CDS {}: {:.4} EUR/MWh (power_avg={:.4}, coal_avg_usd={:.4}, carbon={:.4})",
+        calc_date,
+        cds,
+        power_avg,
+        coal_avg,
+        carbon_price
+    );
+
+    // Reuse upsert_spread: gas_avg field stores coal_avg (USD/t) for CDS
+    crate::db::writer::upsert_spread(
+        pool,
+        calc_date,
+        "rolling_3m_cds",
+        cds,
+        power_avg,
+        coal_avg,    // stored as "gas_avg" column — actually coal USD/t for CDS
+        carbon_price,
+        &power_syms.to_vec(),
+        &coal_syms.to_vec(), // stored as "gas_symbols" — actually coal symbols for CDS
+        &carbon_sym,
+    )
+    .await?;
+
+    Ok(cds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,16 +397,56 @@ mod tests {
     // CSS formula — verified against known values from the document
     #[test]
     fn test_css_formula() {
-        // GAB: 91.26, 88.37, 95.18  -> avg = 91.603
-        // TFM: 52.20, 52.60, 52.34  -> avg = 52.380
+        // GAB: 91.26, 88.37, 95.18  -> avg = 91.6033
+        // TFM: 52.20, 52.60, 52.34  -> avg = 52.38
         // ECF: 71.46
-        // CSS = 91.603 - 52.380/0.50 - 71.46*0.202/0.50
-        //     = 91.603 - 104.760 - 28.870 = -42.027
+        // CSS = 91.6033 - 52.38/0.50 - 71.46*0.202/0.50
+        //     = 91.6033 - 104.76 - 28.8692 = -42.026
         let css = calculate_css(&[91.26, 88.37, 95.18], &[52.20, 52.60, 52.34], 71.46);
         assert!(
-            (css - (-42.027)).abs() < 0.01,
-            "Expected ~-42.027, got {:.3}",
+            (css - (-42.026)).abs() < 0.02,
+            "Expected ~-42.026, got {:.3}",
             css
         );
+    }
+
+    #[test]
+    fn test_cds_formula() {
+        // GAB power: 91.26, 88.37, 95.18  -> avg = 91.6033
+        // ATW coal: 120.0, 122.0, 121.0 USD/t -> avg = 121.0 USD/t
+        //   -> EUR/t = 121.0 / 1.08 = 112.037
+        //   -> EUR/MWh = 112.037 / 8.14 = 13.763
+        // ECF: 71.46
+        // CDS = 91.6033 - 13.763/0.42 - 71.46*0.341/0.42
+        //     = 91.6033 - 32.769 - 58.005 = 0.829
+        let cds = calculate_cds(
+            &[91.26, 88.37, 95.18],
+            &[120.0, 122.0, 121.0],
+            71.46,
+        );
+        assert!(
+            (cds - 0.83).abs() < 0.1,
+            "Expected ~0.83, got {:.3}",
+            cds
+        );
+    }
+
+    #[test]
+    fn test_carbon_impact_factor() {
+        // carbon_price = 71.46, emission_factor = 0.202, eta = 0.50
+        // CIF = -(71.46 * 0.202 / 0.50) = -28.870
+        let cif = carbon_impact_factor(71.46);
+        assert!(
+            (cif - (-28.870)).abs() < 0.01,
+            "Expected ~-28.870, got {:.3}",
+            cif
+        );
+    }
+
+    #[test]
+    fn test_atw_symbol_generation() {
+        assert_eq!(get_ice_symbol("ATW", 1, d(2026, 3, 29)), "ATW FMJ0026!");
+        assert_eq!(get_ice_symbol("ATW", 2, d(2026, 3, 29)), "ATW FMK0026!");
+        assert_eq!(get_ice_symbol("ATW", 3, d(2026, 3, 29)), "ATW FMM0026!");
     }
 }

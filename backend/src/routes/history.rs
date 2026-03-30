@@ -127,7 +127,6 @@ pub async fn spreads_handler(
     Query(params): Query<HistoryParams>,
 ) -> (HeaderMap, Json<Value>) {
     let resolution = params.resolution.as_deref().unwrap_or("daily");
-    let bucket = resolution_to_bucket(resolution);
     let from = params.from.as_deref().unwrap_or("2025-01-01");
     let to = params
         .to
@@ -140,54 +139,47 @@ pub async fn spreads_handler(
         None => return (headers_cached(), Json(empty_history("spreads", resolution, from, &to))),
     };
 
-    // Fetch TTF, ARA (converted to EUR), EUA per bucket and compute CSS/CDS inline
-    let rows = sqlx::query_as::<_, (Option<chrono::DateTime<Utc>>, Option<f64>, Option<f64>, Option<f64>)>(
-        r#"WITH bucketed AS (
-               SELECT
-                   time_bucket($1::interval, ts) AS bucket,
-                   ticker,
-                   AVG(close) AS avg_close
-               FROM fuel_daily
-               WHERE ts >= $2::date AND ts <= $3::date
-                 AND ticker IN ('TTF', 'ARA', 'EUA')
-               GROUP BY bucket, ticker
-           )
-           SELECT
-               b_ttf.bucket,
-               b_ttf.avg_close AS ttf,
-               b_ara.avg_close AS ara,
-               b_eua.avg_close AS eua
-           FROM bucketed b_ttf
-           LEFT JOIN bucketed b_ara ON b_ara.bucket = b_ttf.bucket AND b_ara.ticker = 'ARA'
-           LEFT JOIN bucketed b_eua ON b_eua.bucket = b_ttf.bucket AND b_eua.ticker = 'EUA'
-           WHERE b_ttf.ticker = 'TTF'
-           ORDER BY b_ttf.bucket ASC"#,
+    // Read pre-computed CSS and CDS from calculated_spreads (forward-looking).
+    let rows = sqlx::query_as::<_, (chrono::NaiveDate, String, f64, f64)>(
+        r#"
+        SELECT date, spread_type, value, carbon_price
+        FROM calculated_spreads
+        WHERE date >= $1::date AND date <= $2::date
+          AND spread_type IN ('rolling_3m_css', 'rolling_3m_cds')
+        ORDER BY date ASC
+        "#,
     )
-    .bind(bucket)
     .bind(from)
     .bind(to.as_str())
     .fetch_all(pool)
     .await
     .unwrap_or_default();
 
-    // Hardcoded RDN and EUR/USD for historical spread computation
-    let rdn = 85.0;
-    let eur_usd = 1.08;
+    // Pivot CSS + CDS rows into per-date points
+    let mut date_map: std::collections::BTreeMap<chrono::NaiveDate, (Option<f64>, Option<f64>, Option<f64>)> =
+        std::collections::BTreeMap::new();
+    for (date, spread_type, value, carbon_price) in &rows {
+        let entry = date_map.entry(*date).or_insert((None, None, None));
+        match spread_type.as_str() {
+            "rolling_3m_css" => {
+                entry.0 = Some(round2(*value));
+                // Carbon impact factor derived from forward EUA
+                entry.2 = Some(round2(crate::analytics::css::carbon_impact_factor(*carbon_price)));
+            }
+            "rolling_3m_cds" => entry.1 = Some(round2(*value)),
+            _ => {}
+        }
+    }
 
-    let points: Vec<Value> = rows
+    let points: Vec<Value> = date_map
         .iter()
-        .filter_map(|(ts, ttf, ara, eua)| {
-            let ttf = (*ttf)?;
-            let ara = (*ara)?;
-            let eua = (*eua)?;
-            let ara_eur = ara / eur_usd;
-            let ara_eur_gj = ara_eur / 29.31;
-            let css = round2(rdn - (ttf / 0.60) - (eua * 0.202));
-            let cds_42 = round2(rdn - (ara_eur_gj / 0.42) - (eua * 0.341));
+        .filter_map(|(date, (css, cds, _cif))| {
+            // Only emit points that have at least CSS
+            let css_val = (*css)?;
             Some(json!({
-                "ts": ts.map(|t| t.to_rfc3339()),
-                "css": css,
-                "cds_42": cds_42,
+                "ts": date.and_hms_opt(17, 30, 0).unwrap().and_utc().to_rfc3339(),
+                "css": css_val,
+                "cds_42": cds.unwrap_or(0.0),
             }))
         })
         .collect();

@@ -406,7 +406,7 @@ async fn build_retrospective_text(
             cds_term_y1: None,
             baseload_profitability_eur_mwh: css.max(0.0),
             peak_load_advantage_eur_mwh: (css * 1.4 * 100.0).round() / 100.0,
-            carbon_impact_factor: (-fuel.eua_eur_tonne * 0.202 * 100.0).round() / 100.0,
+            carbon_impact_factor: (crate::analytics::css::carbon_impact_factor(fuel.eua_eur_tonne) * 100.0).round() / 100.0,
             dispatch_signal: dispatch_signal.to_string(),
             history_30d: history,
             fetched_at: Utc::now().to_rfc3339(),
