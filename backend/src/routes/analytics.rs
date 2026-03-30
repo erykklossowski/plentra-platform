@@ -249,12 +249,19 @@ pub async fn get_evening_decomposition(
                GROUP BY ts::date
            ),
            spot_fuels AS (
+               SELECT DISTINCT ON (date, ticker) date, ticker, close
+               FROM fuel_ohlcv
+               WHERE ticker IN ('TTF', 'EUA')
+                 AND close > 0 AND close < 1000000
+               ORDER BY date, ticker, volume DESC
+           ),
+           spot_pivot AS (
                SELECT
-                   ts::date AS date,
+                   date,
                    MAX(close) FILTER (WHERE ticker = 'TTF') AS ttf_eur,
                    MAX(close) FILTER (WHERE ticker = 'EUA') AS eua_eur
-               FROM fuel_daily
-               GROUP BY ts::date
+               FROM spot_fuels
+               GROUP BY date
            )
            SELECT
                b.date,
@@ -264,12 +271,12 @@ pub async fn get_evening_decomposition(
                AVG(o.oze_mw) OVER (ORDER BY b.date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)
                    AS oze_30d_avg,
                -- Carry forward last known fuel price across weekends/holidays
-               (SELECT sf2.ttf_eur FROM spot_fuels sf2
-                WHERE sf2.date <= b.date AND sf2.ttf_eur IS NOT NULL
-                ORDER BY sf2.date DESC LIMIT 1) AS ttf_eur,
-               (SELECT sf2.eua_eur FROM spot_fuels sf2
-                WHERE sf2.date <= b.date AND sf2.eua_eur IS NOT NULL
-                ORDER BY sf2.date DESC LIMIT 1) AS eua_eur
+               (SELECT sp.ttf_eur FROM spot_pivot sp
+                WHERE sp.date <= b.date AND sp.ttf_eur IS NOT NULL
+                ORDER BY sp.date DESC LIMIT 1) AS ttf_eur,
+               (SELECT sp.eua_eur FROM spot_pivot sp
+                WHERE sp.date <= b.date AND sp.eua_eur IS NOT NULL
+                ORDER BY sp.date DESC LIMIT 1) AS eua_eur
            FROM baseline b
            LEFT JOIN oze_midday o
                ON o.date = b.date

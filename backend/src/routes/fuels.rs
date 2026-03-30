@@ -94,19 +94,6 @@ pub async fn handler(State(state): State<Arc<AppState>>) -> (HeaderMap, Json<Val
             let eua_v = find("EUA").unwrap_or(0.0);
             let ara_v = find("ARA").unwrap_or(0.0);
 
-            // Persist to DB
-            if let Some(ref pool) = state.db {
-                let ts = Utc::now()
-                    .date_naive()
-                    .and_hms_opt(17, 30, 0)
-                    .unwrap()
-                    .and_utc();
-                for (n, p, u) in &settlements {
-                    let _ = crate::db::writer::write_fuel_price(pool, ts, n, *p, u, "DATABENTO")
-                        .await;
-                }
-            }
-
             let fuel_data = FuelData {
                 ttf_eur_mwh: ttf_v,
                 ttf_change_pct: 0.0,
@@ -171,16 +158,6 @@ async fn background_databento_refresh(api_key: &str, state: &Arc<AppState>) {
         return;
     }
     state.cache.invalidate(CACHE_KEY);
-    if let Some(ref pool) = state.db {
-        let ts = Utc::now()
-            .date_naive()
-            .and_hms_opt(17, 30, 0)
-            .unwrap()
-            .and_utc();
-        for (n, p, u) in &settlements {
-            let _ = crate::db::writer::write_fuel_price(pool, ts, n, *p, u, "DATABENTO").await;
-        }
-    }
 }
 
 async fn db_fallback(state: &Arc<AppState>, key: &str) -> Option<Value> {

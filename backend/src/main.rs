@@ -110,55 +110,17 @@ async fn main() {
                     continue;
                 };
 
-                tracing::info!("Fuel scheduler: running Databento fetch");
-                let settlements = fetchers::databento::fetch_today(api_key).await;
+                tracing::info!("Fuel scheduler: running daily OHLCV fetch");
 
-                if settlements.is_empty() {
-                    tracing::warn!("Fuel scheduler: no settlements — weekend or holiday");
-                    continue;
-                }
-
-                // Invalidate caches
-                sched_state.cache.invalidate("fuels");
-                sched_state.cache.invalidate("summary");
-                sched_state.cache.invalidate("forecast");
-                sched_state.cache.invalidate("spreads");
-
-                // Persist to TimescaleDB
+                // Persist to fuel_ohlcv + compute CSS/CDS
                 if let Some(ref pool) = sched_state.db {
-                    let ts = chrono::Utc::now()
-                        .date_naive()
-                        .and_hms_opt(17, 30, 0)
-                        .unwrap()
-                        .and_utc();
-
-                    for (name, price, unit) in &settlements {
-                        match crate::db::writer::write_fuel_price(
-                            pool, ts, name, *price, unit, "DATABENTO",
-                        )
-                        .await
-                        {
-                            Ok(()) => tracing::info!(
-                                "Fuel scheduler: wrote {} {:.4} {}",
-                                name,
-                                price,
-                                unit
-                            ),
-                            Err(e) => tracing::warn!(
-                                "Fuel scheduler: DB write failed for {}: {}",
-                                name,
-                                e
-                            ),
-                        }
-                    }
-
-                    // ENTSO-E DA prices retired — PSE scheduler handles DA prices at 15:00 UTC
-
-                // Daily OHLCV fetch + CSS calculation
                     let today = chrono::Utc::now().date_naive();
                     let yesterday = today - chrono::Duration::days(1);
                     match fetchers::databento::fetch_ohlcv_for_css(api_key, yesterday, today).await {
                         Err(e) => tracing::error!("Daily OHLCV fetch failed: {}", e),
+                        Ok(bars) if bars.is_empty() => {
+                            tracing::warn!("Fuel scheduler: no OHLCV bars — weekend or holiday");
+                        }
                         Ok(bars) => {
                             for b in &bars {
                                 let _ =
@@ -169,6 +131,11 @@ async fn main() {
                                 bars.len(),
                                 yesterday
                             );
+
+                            sched_state.cache.invalidate("fuels");
+                            sched_state.cache.invalidate("summary");
+                            sched_state.cache.invalidate("forecast");
+                            sched_state.cache.invalidate("spreads");
 
                             // Calculate CSS + CDS for yesterday
                             match analytics::css::run_css(pool, yesterday).await {

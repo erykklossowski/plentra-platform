@@ -29,7 +29,6 @@ async fn check_data_integrity(pool: &PgPool) {
     let core_tables = [
         "fuel_ohlcv",
         "calculated_spreads",
-        "fuel_daily",
         "reserve_prices_hourly",
         "curtailment_15min",
         "api_cache",

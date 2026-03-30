@@ -11,17 +11,26 @@ pub struct FuelHistory {
 }
 
 /// Last N days of daily close prices for a ticker.
+/// Reads from fuel_ohlcv, picking the highest-volume contract per date.
 pub async fn get_fuel_history(
     pool: &PgPool,
     ticker: &str,
     days: i64,
 ) -> anyhow::Result<Vec<FuelHistory>> {
     let rows = sqlx::query_as::<_, FuelHistory>(
-        "SELECT ts, ticker, close, unit
-         FROM fuel_daily
-         WHERE ticker = $1
-           AND ts >= NOW() - make_interval(days => $2)
-         ORDER BY ts ASC",
+        r#"
+        SELECT (date + TIME '17:30:00') AT TIME ZONE 'UTC' AS ts,
+               ticker, close, unit
+        FROM (
+            SELECT DISTINCT ON (date) date, ticker, close, unit
+            FROM fuel_ohlcv
+            WHERE ticker = $1
+              AND date >= CURRENT_DATE - make_interval(days => $2)
+              AND close > 0 AND close < 1000000
+            ORDER BY date ASC, volume DESC
+        ) sub
+        ORDER BY date ASC
+        "#,
     )
     .bind(ticker)
     .bind(days as i32)
@@ -30,13 +39,16 @@ pub async fn get_fuel_history(
     Ok(rows)
 }
 
-/// Latest fuel price for a ticker (most recent row).
+/// Latest fuel price for a ticker (most recent front-month close from fuel_ohlcv).
 pub async fn get_latest_fuel_price(
     pool: &PgPool,
     ticker: &str,
 ) -> anyhow::Result<Option<f64>> {
     let row: Option<(f64,)> = sqlx::query_as(
-        "SELECT close FROM fuel_daily WHERE ticker = $1 ORDER BY ts DESC LIMIT 1",
+        r#"SELECT close FROM fuel_ohlcv
+           WHERE ticker = $1 AND close > 0 AND close < 1000000
+           ORDER BY date DESC, volume DESC
+           LIMIT 1"#,
     )
     .bind(ticker)
     .fetch_optional(pool)

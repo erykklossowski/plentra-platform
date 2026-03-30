@@ -52,28 +52,10 @@ pub async fn handler(
 
     match source {
         "databento" => {
-            let api_key = match config.databento_api_key {
-                Some(k) => k,
-                None => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"error": "DATABENTO_API_KEY not set"})),
-                    )
-                        .into_response()
-                }
-            };
-            tokio::spawn(async move {
-                match backfill_databento(&api_key, &pool, days).await {
-                    Ok(n) => tracing::info!("Databento backfill: {} rows written", n),
-                    Err(e) => tracing::error!("Databento backfill failed: {}", e),
-                }
-            });
+            // Legacy alias — redirect to databento_ohlcv (fuel_daily is retired)
             Json(json!({
-                "status": "backfill started",
-                "source": "databento",
-                "days": days,
-                "instruments": ["TTF", "EUA", "ARA"],
-                "note": "check Railway logs for progress"
+                "status": "deprecated",
+                "note": "use source=databento_ohlcv instead — fuel_daily has been consolidated into fuel_ohlcv"
             }))
             .into_response()
         }
@@ -419,60 +401,9 @@ pub async fn handler(
             .into_response()
         }
         "sync_fuel_daily" => {
-            // Populate fuel_daily from fuel_ohlcv close prices.
-            // Takes the front-month contract close per (date, ticker).
-
-            // First, check how many source rows we have
-            let src_count = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(DISTINCT (date, ticker)) FROM fuel_ohlcv WHERE close > 0 AND close < 1000000"
-            )
-            .fetch_one(&pool)
-            .await
-            .unwrap_or(0);
-
-            let result = sqlx::query(
-                r#"
-                WITH front_month AS (
-                    SELECT DISTINCT ON (date, ticker)
-                        date, ticker, close, unit
-                    FROM fuel_ohlcv
-                    WHERE close > 0 AND close < 1000000
-                    ORDER BY date, ticker, raw_symbol ASC
-                )
-                INSERT INTO fuel_daily (ts, ticker, close, unit, source)
-                SELECT (date + TIME '17:30:00') AT TIME ZONE 'UTC',
-                       ticker, close, unit, 'DATABENTO'
-                FROM front_month
-                ON CONFLICT (ts, ticker) DO UPDATE SET
-                    close  = EXCLUDED.close,
-                    unit   = EXCLUDED.unit,
-                    source = EXCLUDED.source
-                "#,
-            )
-            .execute(&pool)
-            .await;
-
-            let written = match &result {
-                Ok(r) => r.rows_affected() as usize,
-                Err(e) => {
-                    tracing::error!("sync_fuel_daily failed: {}", e);
-                    return Json(json!({
-                        "status": "error",
-                        "error": format!("{}", e),
-                        "source_rows": src_count,
-                    })).into_response();
-                }
-            };
-
-            // Invalidate caches so forecast/fuels regenerate
-            state.cache.invalidate("forecast");
-            state.cache.invalidate("fuels");
-            state.cache.invalidate("summary");
-
             Json(json!({
-                "status": "done",
-                "rows_written": written,
-                "note": "fuel_daily populated from fuel_ohlcv front-month closes"
+                "status": "deprecated",
+                "note": "fuel_daily has been consolidated into fuel_ohlcv — this endpoint is no longer needed"
             }))
             .into_response()
         }
@@ -507,52 +438,25 @@ pub async fn handler(
             .await
             .unwrap_or(0);
 
-            // Also clean fuel_daily
-            let daily_deleted = sqlx::query_scalar::<_, i64>(
-                "WITH d AS (DELETE FROM fuel_daily WHERE close > 1000000 RETURNING 1) SELECT COUNT(*) FROM d"
-            )
-            .fetch_one(&pool)
-            .await
-            .unwrap_or(0);
-
             Json(json!({
                 "status": "done",
                 "fuel_ohlcv_rows_deleted": deleted,
                 "fuel_ohlcv_open_fixed": fixed_open,
                 "fuel_ohlcv_high_fixed": fixed_high,
                 "fuel_ohlcv_low_fixed": fixed_low,
-                "fuel_daily_rows_deleted": daily_deleted,
             }))
             .into_response()
         }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown source, use: databento, databento_ohlcv, pse_prices, entso_generation, sync_fuel_daily, recalculate_spreads, cleanup_sentinels, ohlcv_status, curtailment, reserves"})),
+                Json(json!({"error": "unknown source, use: databento_ohlcv, pse_prices, entso_generation, recalculate_spreads, cleanup_sentinels, ohlcv_status, curtailment, reserves"})),
             )
                 .into_response()
         }
     }
 }
 
-async fn backfill_databento(
-    api_key: &str,
-    pool: &PgPool,
-    days: i64,
-) -> anyhow::Result<usize> {
-    let records = crate::fetchers::databento::fetch_history(api_key, days).await?;
-
-    let mut written = 0usize;
-    for (ts, name, price, unit) in &records {
-        match crate::db::writer::write_fuel_price(pool, *ts, name, *price, unit, "DATABENTO").await
-        {
-            Ok(()) => written += 1,
-            Err(e) => tracing::warn!("Backfill write failed for {} at {}: {}", name, ts, e),
-        }
-    }
-    tracing::info!("Backfill: {}/{} rows written", written, records.len());
-    Ok(written)
-}
 
 fn parse_pse_dtime_utc(dtime: &str) -> Option<chrono::DateTime<Utc>> {
     chrono::NaiveDateTime::parse_from_str(dtime, "%Y-%m-%d %H:%M:%S")

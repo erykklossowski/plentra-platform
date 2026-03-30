@@ -3,57 +3,6 @@ use sqlx::PgPool;
 
 use super::models::FuelOhlcv;
 
-/// Write a single fuel price data point (daily close).
-/// Idempotent: duplicate (ts, ticker) rows are silently ignored.
-pub async fn write_fuel_price(
-    pool: &PgPool,
-    ts: DateTime<Utc>,
-    ticker: &str,
-    close: f64,
-    unit: &str,
-    source: &str,
-) -> anyhow::Result<()> {
-    sqlx::query(
-        "INSERT INTO fuel_daily (ts, ticker, close, unit, source)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(ts)
-    .bind(ticker)
-    .bind(close)
-    .bind(unit)
-    .bind(source)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Write a batch of fuel prices in a single transaction.
-pub async fn write_fuel_prices_batch(
-    pool: &PgPool,
-    rows: &[(DateTime<Utc>, &str, f64, &str, &str)],
-) -> anyhow::Result<usize> {
-    let mut tx = pool.begin().await?;
-    let mut count = 0usize;
-    for (ts, ticker, close, unit, source) in rows {
-        let result = sqlx::query(
-            "INSERT INTO fuel_daily (ts, ticker, close, unit, source)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(ts)
-        .bind(ticker)
-        .bind(close)
-        .bind(unit)
-        .bind(source)
-        .execute(&mut *tx)
-        .await?;
-        count += result.rows_affected() as usize;
-    }
-    tx.commit().await?;
-    Ok(count)
-}
-
 /// Write hourly electricity price.
 pub async fn write_price_hourly(
     pool: &PgPool,
