@@ -417,15 +417,11 @@ async fn build_retrospective_text(
         sd
     };
 
-    // Gather optional contextual data from caches
+    // Gather optional contextual data from caches (residual only — reserves from DB)
     let residual_data = state
         .cache
         .get("residual")
         .or_else(|| state.cache.get_stale("residual"));
-    let reserves_data = state
-        .cache
-        .get("pse_reserves")
-        .or_else(|| state.cache.get_stale("pse_reserves"));
 
     let f = &fuel;
     let s = &spread;
@@ -470,6 +466,64 @@ async fn build_retrospective_text(
         (0.0, 0.0, 0.0, 0.0, 0.0)
     };
 
+    // Query latest reserve prices from DB
+    let (afrr_g, mfrrd_g) = if let Some(ref pool) = state.db {
+        let row: Option<(Option<f64>, Option<f64>)> = sqlx::query_as(
+            "SELECT afrr_g_pln_mw, mfrrd_g_pln_mw FROM reserve_prices_hourly
+             ORDER BY ts DESC LIMIT 1"
+        ).fetch_optional(pool).await.ok().flatten();
+        match row {
+            Some((a, m)) => (a.unwrap_or(0.0), m.unwrap_or(0.0)),
+            None => (0.0, 0.0),
+        }
+    } else {
+        (0.0, 0.0)
+    };
+
+    // Query residual demand from generation_hourly (total demand - wind - solar)
+    let (residual_gw, _total_demand_gw) = if let Some(ref pool) = state.db {
+        // Latest total generation by type
+        let demand_row: Option<(Option<f64>,)> = sqlx::query_as(
+            "SELECT SUM(value_mw) / 1000.0 FROM generation_hourly
+             WHERE ts = (SELECT MAX(ts) FROM generation_hourly WHERE is_forecast = false)
+               AND is_forecast = false"
+        ).fetch_optional(pool).await.ok().flatten();
+        let oze_row: Option<(Option<f64>,)> = sqlx::query_as(
+            "SELECT SUM(value_mw) / 1000.0 FROM generation_hourly
+             WHERE ts = (SELECT MAX(ts) FROM generation_hourly WHERE is_forecast = false)
+               AND source_type IN ('WIND', 'PV')
+               AND is_forecast = false"
+        ).fetch_optional(pool).await.ok().flatten();
+        let total = demand_row.and_then(|r| r.0).unwrap_or(0.0);
+        let oze = oze_row.and_then(|r| r.0).unwrap_or(0.0);
+        (total - oze, total)
+    } else {
+        (0.0, 0.0)
+    };
+
+    // Use DB values if available, fall back to cache, then defaults
+    let current_residual = if residual_gw > 0.0 {
+        residual_gw
+    } else {
+        residual_data.as_ref()
+            .and_then(|d| d.data["current_residual_gw"].as_f64())
+            .unwrap_or(0.0)
+    };
+    let must_run = residual_data.as_ref()
+        .and_then(|d| d.data["must_run_floor_gw"].as_f64())
+        .unwrap_or(8.0);
+    // CRI = curtailment risk based on how close residual is to must-run floor
+    let cri_value = if current_residual > 0.0 && must_run > 0.0 {
+        ((1.0 - (current_residual - must_run) / current_residual) * 100.0).max(0.0)
+    } else {
+        residual_data.as_ref()
+            .and_then(|d| d.data["cri_value"].as_f64())
+            .unwrap_or(0.0)
+    };
+    let cri_level = if cri_value > 70.0 { "HIGH" }
+        else if cri_value > 40.0 { "ELEVATED" }
+        else { "LOW" };
+
     let input = RetrospectiveInput {
         rdn_pln_mwh: rdn_pln,
         rdn_change_pct,
@@ -482,35 +536,17 @@ async fn build_retrospective_text(
         css_spot: s.css_spot,
         cds_spot_eta42: s.cds_spot_eta42,
         dispatch_signal: s.dispatch_signal.clone(),
-        current_residual_gw: residual_data
-            .as_ref()
-            .and_then(|d| d.data["current_residual_gw"].as_f64())
-            .unwrap_or(15.0),
-        must_run_floor_gw: residual_data
-            .as_ref()
-            .and_then(|d| d.data["must_run_floor_gw"].as_f64())
-            .unwrap_or(8.0),
-        cri_value: residual_data
-            .as_ref()
-            .and_then(|d| d.data["cri_value"].as_f64())
-            .unwrap_or(30.0),
-        cri_level: residual_data
-            .as_ref()
-            .and_then(|d| d.data["cri_level"].as_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| "LOW".to_string()),
+        current_residual_gw: current_residual,
+        must_run_floor_gw: must_run,
+        cri_value,
+        cri_level: cri_level.to_string(),
         ytd_total_gwh: ytd_total,
         ytd_wind_gwh: ytd_wind,
         ytd_solar_gwh: ytd_solar,
         ytd_network_gwh: ytd_network,
         ytd_balance_gwh: ytd_balance,
-        afrr_g_pln_mw: reserves_data
-            .as_ref()
-            .and_then(|d| d.data["prices"]["afrr_g_pln_mw"].as_f64())
-            .unwrap_or(0.0),
-        mfrrd_g_pln_mw: reserves_data
-            .as_ref()
-            .and_then(|d| d.data["prices"]["mfrrd_g_pln_mw"].as_f64())
-            .unwrap_or(0.0),
+        afrr_g_pln_mw: afrr_g,
+        mfrrd_g_pln_mw: mfrrd_g,
     };
 
     let prompt = build_retrospective_prompt(&input);
